@@ -53,5 +53,11 @@
     <None Include="shaders\tonemapping.frag">
       <Filter>Source Files\shaders</Filter>
     </None>
+    <None Include="shaders\shadow_map.frag">
+      <Filter>Source Files\shaders</Filter>
+    </None>
+    <None Include="shaders\shadow_map.vert">
+      <Filter>Source Files\shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

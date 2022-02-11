@@ -6,8 +6,11 @@ layout(binding = 0) uniform sampler2D gPos;
 layout(binding = 1) uniform sampler2D gNormal;
 layout(binding = 2) uniform sampler2D gDiffuse;
 layout(binding = 3) uniform sampler2D gSpecular;
+layout(binding = 4) uniform sampler2D shadowMap;
 
 layout(push_constant) uniform CamPos{
+	mat4 shadowMatrix;
+	vec4 lightPos;
 	vec3 camPos;
 	int renderMode;
 };
@@ -16,7 +19,6 @@ layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 col;
 
 void main(){
-	vec3 lightPos = vec3(0, 2, 0); //global light
 	float lightRadius = 100; //global (sphere) light radius
 
 	vec4 pos = texture(gPos, inUV);
@@ -39,7 +41,23 @@ void main(){
 		return;
 	}
 
-	vec3 L = lightPos - pos.xyz;
+	vec3 ambient = diffuseRoughness.xyz * 0.02;
+	vec4 shadowCoord = shadowMatrix * pos;
+	vec2 shadowIndex = shadowCoord.xy / shadowCoord.w;
+
+	if(shadowCoord.w > 0 && //discard fragments behind the light
+		shadowIndex.x >= 0 && shadowIndex.y >= 0 && //uv boundary [0 - 1] check
+		shadowIndex.x <= 1 && shadowIndex.y <= 1){
+		float lightDepth = texture(shadowMap, shadowIndex).r;
+		float pixelDepth = shadowCoord.w;
+
+		if(pixelDepth > lightDepth){//in shadow
+			col = vec4(ambient, 1.f);
+			return;
+		}
+	}
+
+	vec3 L = lightPos.xyz - pos.xyz;
 	float dist = length(L);
 	L = normalize(L);
 	vec3 V = normalize(camPos - pos.xyz);
@@ -47,10 +65,6 @@ void main(){
 	vec3 Lo = BRDF(L, V, normal.xyz, specularMetallic.w,
 		diffuseRoughness.w, diffuseRoughness.xyz, specularMetallic.xyz,
 		1, vec3(5.f, 5.f, 5.f), lightRadius);
-	vec3 ambient = diffuseRoughness.xyz * 0.02;
 
-	vec3 outColor = Lo + ambient;
-	//outColor /= (outColor + vec3(1.0));
-	//outColor = pow(outColor, vec3(1.0 / 2.2));
-	col = vec4(outColor, 1.f);
+	col = vec4(Lo + ambient, 1.f);
 }

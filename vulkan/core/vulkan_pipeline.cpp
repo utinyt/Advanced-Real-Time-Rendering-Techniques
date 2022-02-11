@@ -211,7 +211,7 @@ void PipelineGenerator::generate(VkRenderPass renderPass,
 		throw std::runtime_error("PipelineGenerator::generate(): missing shader stages");
 	}
 	if (descriptorSetLayouts.empty()) {
-		throw std::runtime_error("PipelineGenerator::generate(): missing descriptor set layouts");
+		//throw std::runtime_error("PipelineGenerator::generate(): missing descriptor set layouts");
 	}
 
 	//shrink

@@ -92,6 +92,8 @@
     <None Include="shaders\local_lights_loop.frag" />
     <None Include="shaders\local_lights_loop.vert" />
     <None Include="shaders\pbr.glsl" />
+    <None Include="shaders\shadow_map.frag" />
+    <None Include="shaders\shadow_map.vert" />
     <None Include="shaders\tonemapping.frag" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

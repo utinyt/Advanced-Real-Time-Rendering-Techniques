@@ -18,6 +18,7 @@ namespace {
 	std::uniform_real_distribution<> rdFloat(0.0, 1.0);
 	int BUNNY_COUNT_SQRT = 5;
 	int LOCAL_LIGHTS_COUNT_SQRT = 26;
+	uint32_t SHADOW_MAP_DIM = 1024;
 }
 
 class Imgui : public ImguiBase {
@@ -25,7 +26,6 @@ public:
 	virtual void newFrame() override {
 		ImGui::NewFrame();
 		ImGui::Begin("Setting");
-		ImGui::Checkbox("N local light in one shader", &userInput.lightLoop);
 		ImGui::NewLine();
 		ImGui::RadioButton("Final Output", &userInput.renderMode, 0);
 		ImGui::NewLine();
@@ -42,7 +42,6 @@ public:
 	/* user input collection */
 	struct UserInput {
 		int renderMode = 0;
-		bool lightLoop = false;
 	} userInput;
 };
 
@@ -73,6 +72,9 @@ public:
 		for (auto& framebuffer : geometryFramebuffers) {
 			framebuffer.cleanup();
 		}
+		for (auto& framebuffer : shadowMaps) {
+			framebuffer.cleanup();
+		}
 
 		//models
 		devices.memoryAllocator.freeBufferMemory(bunnyBuffer, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -87,17 +89,12 @@ public:
 		vkDestroyDescriptorSetLayout(devices.device, descLayout, nullptr);
 		vkDestroyDescriptorPool(devices.device, gbufferDescPool, nullptr);
 		vkDestroyDescriptorSetLayout(devices.device, gbufferDescLayout, nullptr);
-		vkDestroyDescriptorPool(devices.device, localLightLoopDescPool, nullptr);
-		vkDestroyDescriptorSetLayout(devices.device, localLightLoopDescLayout, nullptr);
 
 		//uniform buffers
 		for (size_t i = 0; i < uniformBuffers.size(); ++i) {
 			devices.memoryAllocator.freeBufferMemory(uniformBuffers[i], 
 				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 			vkDestroyBuffer(devices.device, uniformBuffers[i], nullptr);
-			devices.memoryAllocator.freeBufferMemory(localLightUniformBuffers[i],
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-			vkDestroyBuffer(devices.device, localLightUniformBuffers[i], nullptr);
 		}
 
 		//pipelines
@@ -107,12 +104,13 @@ public:
 		vkDestroyPipelineLayout(devices.device, lightingPassPipelineLayout, nullptr);
 		vkDestroyPipeline(devices.device, localLightPipeline, nullptr);
 		vkDestroyPipelineLayout(devices.device, localLightPipelineLayout, nullptr);
-		vkDestroyPipeline(devices.device, localLightLoopPipeline, nullptr);
-		vkDestroyPipelineLayout(devices.device, localLightLoopPipelineLayout, nullptr);
+		vkDestroyPipeline(devices.device, shadowMapPipeline, nullptr);
+		vkDestroyPipelineLayout(devices.device, shadowMapPipelineLayout, nullptr);
 
 		//renderpass
 		vkDestroyRenderPass(devices.device, renderPass, nullptr);
 		vkDestroyRenderPass(devices.device, geometryRenderPass, nullptr);
+		vkDestroyRenderPass(devices.device, shadowMapRenderPass, nullptr);
 		//sampler
 		vkDestroySampler(devices.device, sampler, nullptr);
 
@@ -138,7 +136,7 @@ public:
 		floorBuffer = floor.createModelBuffer(&devices);
 		createSphereModel();
 		sphereBuffer = sphere.createModelBuffer(&devices);
-
+		
 		/*
 		* local lights
 		*/
@@ -181,6 +179,19 @@ public:
 			glm::vec3(0.02f, 0.02f, 0.02f), //water
 			1.f
 		});
+
+		/*
+		* global light
+		*/
+		glm::vec3 lightPos = glm::vec3(10, 10, -10);
+		lightView = glm::lookAt(lightPos, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+		lightProj = glm::perspective(glm::radians(45.f), 1.f, 0.1f, 1000.f);
+		lightProj[1][1] *= -1;
+		shadowMapPushConstant.lightProjView = lightProj * lightView;
+		lightingPassPushConstant.lightPos = glm::vec4(lightPos, 1.f);
+
+		//create shadow map render targets
+		createShadowMapFramebuffer();
 
 		//geometry pass render targets
 		createGeometryPassFramebuffer();
@@ -231,6 +242,8 @@ private:
 	VkSampler sampler = VK_NULL_HANDLE;
 	/** lighting pass push constant */
 	struct LightingPassPushConstant {
+		glm::mat4 shadowMatrix;
+		glm::vec4 lightPos;
 		glm::vec3 camPos;
 		int renderMode = 0;
 	}lightingPassPushConstant;
@@ -279,23 +292,23 @@ private:
 	} localLightPushConstant;
 
 	/*
-	* for comparison: multiple sphere (N) drawing vs. N iteration in one shader
+	* shadow map resources
 	*/
-	/** pipeline */
-	VkPipeline localLightLoopPipeline = VK_NULL_HANDLE;
-	VkPipelineLayout localLightLoopPipelineLayout = VK_NULL_HANDLE;
-	/** descriptor sets */
-	DescriptorSetBindings localLightLoopBindings;
-	VkDescriptorPool localLightLoopDescPool = VK_NULL_HANDLE;
-	VkDescriptorSetLayout localLightLoopDescLayout = VK_NULL_HANDLE;
-	std::vector<VkDescriptorSet> localLightLoopDescSets;
-	/** local lights uniform buffers */
-	std::vector<VkBuffer> localLightUniformBuffers;
-	std::vector<MemoryAllocator::HostVisibleMemory> localLightUniformBufferMemories;
-	struct LocalLightLoopPushConstant {
-		LightingPassPushConstant lightPassPushConstant;
-		int nbLight = 0;
-	}localLightLoopPushConstant;
+	//light matrices
+	glm::mat4 lightView{};
+	glm::mat4 lightProj{};
+	//shadow map images (framebuffer)
+	std::vector<Framebuffer> shadowMaps;
+	//pipeline
+	VkPipeline shadowMapPipeline = VK_NULL_HANDLE;
+	VkPipelineLayout shadowMapPipelineLayout = VK_NULL_HANDLE;
+	//render pass
+	VkRenderPass shadowMapRenderPass = VK_NULL_HANDLE;
+	//push constant
+	struct ShadowMapPushConstant {
+		glm::mat4 model;
+		glm::mat4 lightProjView;
+	}shadowMapPushConstant;
 
 	/*
 	* called every frame - submit queues
@@ -334,7 +347,81 @@ private:
 	void resizeWindow(bool /*recordCommandBuffer*/) override {
 		VulkanAppBase::resizeWindow(false);
 		createGeometryPassFramebuffer(false);
+		createShadowMapFramebuffer(false);
 		updateDescriptorSets();
+	}
+
+	/*
+	* create shadow map framebuffer
+	*/
+	void createShadowMapFramebuffer(bool createRenderPass = true) {
+		/*
+		* cleanup
+		*/
+		for (auto& framebuffer : shadowMaps) {
+			framebuffer.cleanup();
+		}
+		shadowMaps.resize(MAX_FRAMES_IN_FLIGHT);
+
+		/*
+		* add attachments
+		*/
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+			shadowMaps[i].init(&devices);
+			VkImageCreateInfo imageInfo = vktools::initializers::imageCreateInfo({ SHADOW_MAP_DIM, SHADOW_MAP_DIM, 1 },
+				VK_FORMAT_R32_SFLOAT,
+				VK_IMAGE_TILING_OPTIMAL,
+				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				1);
+
+			//depth (color)
+			shadowMaps[i].addAttachment(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+			//depth
+			imageInfo.format = depthFormat;
+			imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+			shadowMaps[i].addAttachment(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT); //depth
+		}
+
+		/*
+		* render pass
+		*/
+		if (createRenderPass) {
+			std::vector<VkSubpassDependency> dependencies{};
+			dependencies.resize(2);
+
+			dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+			dependencies[0].dstSubpass = 0;
+			dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+			dependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+			dependencies[0].dstStageMask =
+				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+			dependencies[0].dstAccessMask =
+				VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+			dependencies[1].srcSubpass = 0;
+			dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+			dependencies[1].srcStageMask =
+				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+			dependencies[1].srcAccessMask =
+				VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+			shadowMapRenderPass = shadowMaps[0].createRenderPass(dependencies);
+		}
+
+		/*
+		* framebuffers
+		*/
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+			shadowMaps[i].createFramebuffer({ SHADOW_MAP_DIM , SHADOW_MAP_DIM }, shadowMapRenderPass);
+		}
 	}
 
 	/*
@@ -533,6 +620,9 @@ private:
 	*/
 	void createPipeline() {
 		PipelineGenerator gen(devices.device);
+		/*
+		* geometry pass
+		*/
 		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/geometry_vert.spv")), VK_SHADER_STAGE_VERTEX_BIT);
 		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/geometry_frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
 		gen.addPushConstantRange({ VkPushConstantRange{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ObjPushConstant)} });
@@ -544,6 +634,9 @@ private:
 		gen.generate(geometryRenderPass, &geometryPassPipeline, &geometryPassPipelineLayout);
 		gen.resetAll();
 
+		/*
+		* lighting pass
+		*/
 		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/full_quad_vert.spv")), VK_SHADER_STAGE_VERTEX_BIT);
 		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/lighting_pass_frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
 		gen.addPushConstantRange({ VkPushConstantRange{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(LightingPassPushConstant)} });
@@ -554,6 +647,9 @@ private:
 		gen.generate(renderPass, &lightingPassPipeline, &lightingPassPipelineLayout);
 		gen.resetAll();
 
+		/*
+		* local lights pass
+		*/
 		gen.addVertexInputBindingDescription({ sphere.getBindingDescription() });
 		gen.addVertexInputAttributeDescription(sphere.getAttributeDescriptions());
 		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/local_lights_vert.spv")), VK_SHADER_STAGE_VERTEX_BIT);
@@ -578,16 +674,17 @@ private:
 		gen.generate(renderPass, &localLightPipeline, &localLightPipelineLayout);
 		gen.resetAll();
 
-		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/full_quad_vert.spv")), VK_SHADER_STAGE_VERTEX_BIT);
-		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/local_lights_loop_frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
-		gen.addPushConstantRange({ VkPushConstantRange{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(LocalLightLoopPushConstant)} });
-		gen.addDescriptorSetLayout({ localLightLoopDescLayout, gbufferDescLayout });
-		gen.setDepthStencilInfo(VK_FALSE, VK_FALSE);
-		gen.setColorBlendInfo(VK_TRUE);
-		gen.setColorBlendAttachmentState(blendState);
-		gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE);
-		gen.generate(renderPass, &localLightLoopPipeline, &localLightLoopPipelineLayout);
-
+		/*
+		* shadow map pass
+		*/
+		gen.addVertexInputBindingDescription({ bunny.getBindingDescription() });
+		gen.addVertexInputAttributeDescription(bunny.getAttributeDescriptions());
+		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/shadow_map_vert.spv")), VK_SHADER_STAGE_VERTEX_BIT);
+		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/shadow_map_frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
+		gen.addPushConstantRange({ { VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowMapPushConstant) } });
+		gen.setDepthStencilInfo();
+		gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT);
+		gen.generate(shadowMapRenderPass, &shadowMapPipeline, &shadowMapPipelineLayout);
 		LOG("created:\tpipelines")
 	}
 
@@ -643,6 +740,16 @@ private:
 		geometryRenderPassBeginInfo.renderArea = { {0, 0}, swapchain.extent };
 		VkDeviceSize offsets = 0;
 
+		std::array<VkClearValue, 2> shadowMapClearColor{};
+		shadowMapClearColor[0].color = { 0.f, 0.f, 0.f, 1.f };
+		shadowMapClearColor[1].depthStencil = { 1.f, 0 };
+
+		VkRenderPassBeginInfo shadowMapRenderPassInfo{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+		shadowMapRenderPassInfo.clearValueCount = static_cast<uint32_t>(shadowMapClearColor.size());
+		shadowMapRenderPassInfo.pClearValues = shadowMapClearColor.data();
+		shadowMapRenderPassInfo.renderPass = shadowMapRenderPass;
+		shadowMapRenderPassInfo.renderArea = { {0, 0}, {SHADOW_MAP_DIM, SHADOW_MAP_DIM} };
+		
 		VkRenderPassBeginInfo lightingPassRenderPassInfo{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
 		lightingPassRenderPassInfo.clearValueCount = 1;
 		lightingPassRenderPassInfo.pClearValues = &clearColor[0];
@@ -685,6 +792,33 @@ private:
 			vkdebug::marker::endLabel(commandBuffers[i]);
 
 			/*
+			* shadow maps
+			*/
+			vkdebug::marker::beginLabel(commandBuffers[i], "Shadow Map");
+			shadowMapRenderPassInfo.framebuffer = shadowMaps[currentFrame].framebuffer;
+			vkCmdBeginRenderPass(commandBuffers[i], &shadowMapRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vktools::setViewportScissorDynamicStates(commandBuffers[i], {SHADOW_MAP_DIM, SHADOW_MAP_DIM });
+			vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, shadowMapPipeline);
+			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &bunnyBuffer, &offsets);
+			vkCmdBindIndexBuffer(commandBuffers[i], bunnyBuffer, bunny.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
+			//bunny
+			for (int instance = 0; instance < BUNNY_COUNT_SQRT * BUNNY_COUNT_SQRT; ++instance) {
+				shadowMapPushConstant.model = objPushConstants[instance].model;
+				vkCmdPushConstants(commandBuffers[i], shadowMapPipelineLayout,
+					VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowMapPushConstant), &shadowMapPushConstant);
+				vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(bunny.indices.size()), 1, 0, 0, 0);
+			}
+			//floor
+			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &floorBuffer, &offsets);
+			vkCmdBindIndexBuffer(commandBuffers[i], floorBuffer, floor.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
+			shadowMapPushConstant.model = objPushConstants[BUNNY_COUNT_SQRT * BUNNY_COUNT_SQRT].model;
+			vkCmdPushConstants(commandBuffers[i], shadowMapPipelineLayout,
+				VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowMapPushConstant), &shadowMapPushConstant);
+			vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(floor.indices.size()), 1, 0, 0, 0);
+			vkCmdEndRenderPass(commandBuffers[i]);
+			vkdebug::marker::endLabel(commandBuffers[i]);
+
+			/*
 			* lighting pass
 			*/
 			vkdebug::marker::beginLabel(commandBuffers[i], "Lighting Pass");
@@ -694,6 +828,10 @@ private:
 			vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, lightingPassPipeline);
 			vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
 				lightingPassPipelineLayout, 0, 1, &gbufferDescSets[currentFrame], 0, nullptr);
+			lightingPassPushConstant.shadowMatrix =
+				glm::translate(glm::mat4(1.f), glm::vec3(0.5f, 0.5f, 0.5f)) *
+				glm::scale(glm::mat4(1.f), glm::vec3(0.5f, 0.5f, 0.5f)) *
+				shadowMapPushConstant.lightProjView;
 			lightingPassPushConstant.camPos = camera.camPos;
 			lightingPassPushConstant.renderMode = imgui->userInput.renderMode;
 			vkCmdPushConstants(commandBuffers[i], lightingPassPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -702,48 +840,28 @@ private:
 			//vkCmdEndRenderPass(commandBuffers[i]);
 			vkdebug::marker::endLabel(commandBuffers[i]);
 
-			if (imgui->userInput.lightLoop == false) {
-				/*
-				* small local lights
-				*/
-				vkdebug::marker::beginLabel(commandBuffers[i], "Local Lights");
-				//vkCmdBeginRenderPass(commandBuffers[i], &lightingPassRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-				vktools::setViewportScissorDynamicStates(commandBuffers[i], swapchain.extent);
-				vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, localLightPipeline);
-				std::array<VkDescriptorSet, 2> localLightDescs{ descSets[currentFrame] , gbufferDescSets[currentFrame] };
-				vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
-					localLightPipelineLayout, 0, static_cast<uint32_t>(localLightDescs.size()), localLightDescs.data(), 0, nullptr);
-				vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &sphereBuffer, &offsets);
-				vkCmdBindIndexBuffer(commandBuffers[i], sphereBuffer, sphere.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
-				for (size_t lightIndex = 0; lightIndex < localLightInfo.size(); ++lightIndex) {
-					localLightPushConstant.lightInfo = localLightInfo[lightIndex];
-					localLightPushConstant.camPos = camera.camPos;
-					localLightPushConstant.renderMode = imgui->userInput.renderMode;
-					vkCmdPushConstants(commandBuffers[i], localLightPipelineLayout,
-						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-						0, sizeof(localLightPushConstant), &localLightPushConstant);
-					vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(sphere.indices.size()), 1, 0, 0, 0);
-				}
-				vkdebug::marker::endLabel(commandBuffers[i]);
+			/*
+			* small local lights
+			*/
+			vkdebug::marker::beginLabel(commandBuffers[i], "Local Lights");
+			//vkCmdBeginRenderPass(commandBuffers[i], &lightingPassRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vktools::setViewportScissorDynamicStates(commandBuffers[i], swapchain.extent);
+			vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, localLightPipeline);
+			std::array<VkDescriptorSet, 2> localLightDescs{ descSets[currentFrame] , gbufferDescSets[currentFrame] };
+			vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
+				localLightPipelineLayout, 0, static_cast<uint32_t>(localLightDescs.size()), localLightDescs.data(), 0, nullptr);
+			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &sphereBuffer, &offsets);
+			vkCmdBindIndexBuffer(commandBuffers[i], sphereBuffer, sphere.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
+			for (size_t lightIndex = 0; lightIndex < localLightInfo.size(); ++lightIndex) {
+				localLightPushConstant.lightInfo = localLightInfo[lightIndex];
+				localLightPushConstant.camPos = camera.camPos;
+				localLightPushConstant.renderMode = imgui->userInput.renderMode;
+				vkCmdPushConstants(commandBuffers[i], localLightPipelineLayout,
+					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+					0, sizeof(localLightPushConstant), &localLightPushConstant);
+				vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(sphere.indices.size()), 1, 0, 0, 0);
 			}
-			else {
-				/*
-				* small local lights (loop version)
-				*/
-				vkdebug::marker::beginLabel(commandBuffers[i], "Local Lights Loop");
-				//vkCmdBeginRenderPass(commandBuffers[i], &lightingPassRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-				vktools::setViewportScissorDynamicStates(commandBuffers[i], swapchain.extent);
-				vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, localLightLoopPipeline);
-				std::array<VkDescriptorSet, 2> localLightLoopDescs{ localLightLoopDescSets[currentFrame] , gbufferDescSets[currentFrame] };
-				vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
-					localLightLoopPipelineLayout, 0, static_cast<uint32_t>(localLightLoopDescs.size()), localLightLoopDescs.data(), 0, nullptr);
-				localLightLoopPushConstant.lightPassPushConstant = lightingPassPushConstant;
-				localLightLoopPushConstant.nbLight = LOCAL_LIGHTS_COUNT_SQRT * LOCAL_LIGHTS_COUNT_SQRT;
-				vkCmdPushConstants(commandBuffers[i], localLightLoopPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
-					0, sizeof(localLightLoopPushConstant), &localLightLoopPushConstant);
-				vkCmdDraw(commandBuffers[i], 3, 1, 0, 0);
-				vkdebug::marker::endLabel(commandBuffers[i]);
-			}
+			vkdebug::marker::endLabel(commandBuffers[i]);
 
 			/*
 			* imgui
@@ -766,13 +884,9 @@ private:
 		for (size_t i = 0; i < uniformBuffers.size(); ++i) {
 			devices.memoryAllocator.freeBufferMemory(uniformBuffers[i], bufferFlags);
 			vkDestroyBuffer(devices.device, uniformBuffers[i], nullptr);
-			devices.memoryAllocator.freeBufferMemory(localLightUniformBuffers[i], bufferFlags);
-			vkDestroyBuffer(devices.device, localLightUniformBuffers[i], nullptr);
 		}
 		uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
 		uniformBufferMemories.resize(MAX_FRAMES_IN_FLIGHT);
-		localLightUniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
-		localLightUniformBufferMemories.resize(MAX_FRAMES_IN_FLIGHT);
 
 		VkBufferCreateInfo camUniformBufferInfo = vktools::initializers::bufferCreateInfo(sizeof(CameraMatrices),
 			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
@@ -784,9 +898,6 @@ private:
 			VK_CHECK_RESULT(vkCreateBuffer(devices.device, &camUniformBufferInfo, nullptr, &uniformBuffers[i]));
 			uniformBufferMemories[i] = 
 				devices.memoryAllocator.allocateBufferMemory(uniformBuffers[i], bufferFlags);
-			VK_CHECK_RESULT(vkCreateBuffer(devices.device, &lightUniformBufferInfo, nullptr, &localLightUniformBuffers[i]));
-			localLightUniformBufferMemories[i] = 
-				devices.memoryAllocator.allocateBufferMemory(localLightUniformBuffers[i], bufferFlags);
 		}
 	}
 
@@ -797,7 +908,6 @@ private:
 	*/
 	void updateUniformBuffer(size_t currentFrame) {
 		uniformBufferMemories[currentFrame].mapData(devices.device, &cameraMatrices);
-		localLightUniformBufferMemories[currentFrame].mapData(devices.device, localLightInfo.data());
 	}
 
 	/*
@@ -808,8 +918,6 @@ private:
 		vkDestroyDescriptorSetLayout(devices.device, descLayout, nullptr);
 		vkDestroyDescriptorPool(devices.device, gbufferDescPool, nullptr);
 		vkDestroyDescriptorSetLayout(devices.device, gbufferDescLayout, nullptr);
-		vkDestroyDescriptorPool(devices.device, localLightLoopDescPool, nullptr);
-		vkDestroyDescriptorSetLayout(devices.device, localLightLoopDescLayout, nullptr);
 
 		descBindings.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT);
 		descPool	= descBindings.createDescriptorPool(devices.device, MAX_FRAMES_IN_FLIGHT);
@@ -820,14 +928,10 @@ private:
 		gbufferDescBindings.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 		gbufferDescBindings.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 		gbufferDescBindings.addBinding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		gbufferDescBindings.addBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 		gbufferDescPool = gbufferDescBindings.createDescriptorPool(devices.device, MAX_FRAMES_IN_FLIGHT);
 		gbufferDescLayout = gbufferDescBindings.createDescriptorSetLayout(devices.device);
 		gbufferDescSets = vktools::allocateDescriptorSets(devices.device, gbufferDescLayout, gbufferDescPool, MAX_FRAMES_IN_FLIGHT);
-
-		localLightLoopBindings.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
-		localLightLoopDescPool = localLightLoopBindings.createDescriptorPool(devices.device, MAX_FRAMES_IN_FLIGHT);
-		localLightLoopDescLayout = localLightLoopBindings.createDescriptorSetLayout(devices.device);
-		localLightLoopDescSets = vktools::allocateDescriptorSets(devices.device, localLightLoopDescLayout, localLightLoopDescPool, MAX_FRAMES_IN_FLIGHT);
 	}
 
 	/*
@@ -862,16 +966,17 @@ private:
 				geometryFramebuffers[i].attachments[3].imageView,
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			};
+			VkDescriptorImageInfo shadowMapAttachmentInfo{
+				sampler,
+				shadowMaps[i].attachments[0].imageView,
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			};
 
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 0, &posAttachmentInfo));
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 1, &normalAttachmentInfo));
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 2, &diffuseAttachmentInfo));
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 3, &specularAttachmentInfo));
-
-			//localLightLoopDescSets - 1 uniform buffer
-			VkDescriptorBufferInfo localLightUniformInfo{ localLightUniformBuffers[i], 0,
-				sizeof(localLightInfo[0]) * localLightInfo.size() };
-			writes.push_back(localLightLoopBindings.makeWrite(localLightLoopDescSets[i], 0, &localLightUniformInfo));
+			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 4, &shadowMapAttachmentInfo));
 
 			vkUpdateDescriptorSets(devices.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 		}
