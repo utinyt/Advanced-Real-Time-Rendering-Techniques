@@ -26,30 +26,31 @@ void main(){
 	vec4 diffuseRoughness = texture(gDiffuse, inUV);
 	vec4 specularMetallic = texture(gSpecular, inUV);
 
+	vec4 shadowCoord = shadowMatrix * pos;
+	vec2 shadowIndex = shadowCoord.xy / shadowCoord.w;
+	float lightDepth = texture(shadowMap, shadowIndex).r;
+	float pixelDepth = shadowCoord.w;
+
 	switch(renderMode){
 	case 1:
-		col = vec4(pos.xyz, 1.f);
+		col = vec4(texture(shadowMap, inUV).rrr / 50, 1.f); //shadow map
 		return;
 	case 2:
-		col = vec4(normal.xyz, 1.f);
+		col = vec4(shadowIndex.xy, 0, 1.f);
 		return;
 	case 3:
-		col = vec4(diffuseRoughness.xyz, 1.f);
+		col = vec4(vec3(pixelDepth / 50), 1.f);
 		return;
 	case 4:
-		col = vec4(specularMetallic.xyz, 1.f);
+		col = vec4(vec3(lightDepth) / 50, 1.f);
 		return;
 	}
 
 	vec3 ambient = diffuseRoughness.xyz * 0.02;
-	vec4 shadowCoord = shadowMatrix * pos;
-	vec2 shadowIndex = shadowCoord.xy / shadowCoord.w;
 
 	if(shadowCoord.w > 0 && //discard fragments behind the light
 		shadowIndex.x >= 0 && shadowIndex.y >= 0 && //uv boundary [0 - 1] check
 		shadowIndex.x <= 1 && shadowIndex.y <= 1){
-		float lightDepth = texture(shadowMap, shadowIndex).r;
-		float pixelDepth = shadowCoord.w;
 
 		if(pixelDepth > lightDepth){//in shadow
 			col = vec4(ambient, 1.f);

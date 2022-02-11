@@ -9,6 +9,7 @@ layout(push_constant) uniform LightInfo {
 	vec4 lightCenter;
 	vec3 camPos;
 	int renderMode;
+	bool disableLocalLight;
 };
 
 layout(set = 1, binding = 0) uniform sampler2D gPos;
@@ -20,7 +21,7 @@ layout(location = 0) in vec4 inPos;
 layout(location = 0) out vec4 col;
 
 void main(){
-	if(renderMode != 0){
+	if(renderMode != 0 || disableLocalLight == true){
 		col = vec4(0, 0, 0, 1);
 		return;
 	}

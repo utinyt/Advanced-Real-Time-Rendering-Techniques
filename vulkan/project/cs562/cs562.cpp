@@ -28,12 +28,15 @@ public:
 		ImGui::Begin("Setting");
 		ImGui::NewLine();
 		ImGui::RadioButton("Final Output", &userInput.renderMode, 0);
+		if (userInput.renderMode == 0) {
+			ImGui::Checkbox("Disable Local Lights", &userInput.disableLocalLight);
+		}
 		ImGui::NewLine();
-		ImGui::Text("G-Buffer attachment view");
-		ImGui::RadioButton("Position", &userInput.renderMode, 1); ImGui::SameLine();
-		ImGui::RadioButton("Normal", &userInput.renderMode, 2); ImGui::SameLine();
-		ImGui::RadioButton("Diffuse", &userInput.renderMode, 3); ImGui::SameLine();
-		ImGui::RadioButton("Specular", &userInput.renderMode, 4);
+		ImGui::Text("Debug View");
+		ImGui::RadioButton("Shadow Map", &userInput.renderMode, 1); ImGui::SameLine();
+		ImGui::RadioButton("Shadow Index", &userInput.renderMode, 2); ImGui::SameLine();
+		ImGui::RadioButton("Pixel Depth", &userInput.renderMode, 3); ImGui::SameLine();
+		ImGui::RadioButton("Light Depth", &userInput.renderMode, 4);
 		
 		ImGui::End();
 		ImGui::Render();
@@ -42,6 +45,7 @@ public:
 	/* user input collection */
 	struct UserInput {
 		int renderMode = 0;
+		bool disableLocalLight = false;
 	} userInput;
 };
 
@@ -125,8 +129,8 @@ public:
 	*/
 	virtual void initApp() override {
 		VulkanAppBase::initApp();
-		camera.camPos = glm::vec3(1, 4, 10);
-		camera.camFront = glm::normalize(glm::vec3(-1, -3, -10));
+		camera.camPos = glm::vec3(-4, 4, 10);
+		camera.camFront = glm::normalize(glm::vec3(4, -3, -10));
 		camera.camUp = glm::vec3(0.f, 1.f, 0.f);
 
 		//models
@@ -183,7 +187,7 @@ public:
 		/*
 		* global light
 		*/
-		glm::vec3 lightPos = glm::vec3(10, 10, -10);
+		glm::vec3 lightPos = glm::vec3(10, 10, 10);
 		lightView = glm::lookAt(lightPos, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
 		lightProj = glm::perspective(glm::radians(45.f), 1.f, 0.1f, 1000.f);
 		lightProj[1][1] *= -1;
@@ -289,6 +293,7 @@ private:
 		LocalLightInfo lightInfo;
 		glm::vec3 camPos;
 		int renderMode = 0;
+		bool disable = false;
 	} localLightPushConstant;
 
 	/*
@@ -856,6 +861,7 @@ private:
 				localLightPushConstant.lightInfo = localLightInfo[lightIndex];
 				localLightPushConstant.camPos = camera.camPos;
 				localLightPushConstant.renderMode = imgui->userInput.renderMode;
+				localLightPushConstant.disable = imgui->userInput.disableLocalLight;
 				vkCmdPushConstants(commandBuffers[i], localLightPipelineLayout,
 					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 					0, sizeof(localLightPushConstant), &localLightPushConstant);
