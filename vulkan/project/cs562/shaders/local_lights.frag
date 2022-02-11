@@ -21,10 +21,6 @@ layout(location = 0) out vec4 col;
 
 void main(){
 	if(renderMode != 0){
-		if(renderMode  == 5){
-			col = vec4(color, 1);
-			return;
-		}
 		col = vec4(0, 0, 0, 1);
 		return;
 	}
@@ -45,13 +41,10 @@ void main(){
 	L = normalize(L);
 	const vec3 V = normalize(camPos - pos.xyz);
 
-	const vec3 Lo = BRDF(L, V, normal.xyz, specularMetallic.w,
+	vec3 Lo = BRDF(L, V, normal.xyz, specularMetallic.w,
 		diffuseRoughness.w, diffuseRoughness.xyz, specularMetallic.xyz,
 		dist, color, radius);
-	//vec3 ambient = diffuseRoughness.xyz * 0.02;
 
-	vec3 outColor = Lo;
-	//outColor /= (outColor + vec3(1.0));
-	//outColor = pow(outColor, vec3(1.0 / 2.2));
-	col = vec4(outColor, 1.f);
+	Lo = Lo / (Lo + vec3(1.f));
+	col = vec4(Lo, 1.f);
 }

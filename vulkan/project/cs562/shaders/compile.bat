@@ -4,4 +4,5 @@
 ..\..\glslc.exe lighting_pass.frag -o lighting_pass_frag.spv -g
 ..\..\glslc.exe local_lights.vert -o local_lights_vert.spv -g
 ..\..\glslc.exe local_lights.frag -o local_lights_frag.spv -g
+..\..\glslc.exe local_lights_loop.frag -o local_lights_loop_frag.spv -g
 pause

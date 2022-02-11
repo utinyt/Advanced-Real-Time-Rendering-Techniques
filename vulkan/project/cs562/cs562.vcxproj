@@ -89,7 +89,10 @@
     <None Include="shaders\lighting_pass.frag" />
     <None Include="shaders\local_lights.frag" />
     <None Include="shaders\local_lights.vert" />
+    <None Include="shaders\local_lights_loop.frag" />
+    <None Include="shaders\local_lights_loop.vert" />
     <None Include="shaders\pbr.glsl" />
+    <None Include="shaders\tonemapping.frag" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

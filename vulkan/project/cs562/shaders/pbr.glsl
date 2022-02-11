@@ -40,7 +40,8 @@ vec3 BRDF(vec3 L, vec3 V, vec3 N, float metallic, float roughness, vec3 albedo, 
 		vec3 kd = (vec3(1.0) - F) * (1.0 - metallic);
 
 		vec3 spec = D * G * F / (4.0 * nDotL * nDotV + 0.001f);
-		float attenuation = 1.0 / (dist * dist + 0.001f) - 1.0 / (sphereRadius * sphereRadius + 0.001f);
+		float attenuation = 1.0 / (dist * dist) - 1.0 / (sphereRadius * sphereRadius);
+		//float s = mix(1, 0, dist / sphereRadius);
 		Lo += (kd * albedo / PI + spec) * attenuation * lightColor * nDotL;
 	}
 

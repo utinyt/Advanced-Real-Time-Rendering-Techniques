@@ -16,7 +16,8 @@ namespace {
 	std::random_device device;
 	std::mt19937_64 RNGen(device());
 	std::uniform_real_distribution<> rdFloat(0.0, 1.0);
-	int BUNNY_COUNT = 3;
+	int BUNNY_COUNT_SQRT = 5;
+	int LOCAL_LIGHTS_COUNT_SQRT = 26;
 }
 
 class Imgui : public ImguiBase {
@@ -24,9 +25,9 @@ public:
 	virtual void newFrame() override {
 		ImGui::NewFrame();
 		ImGui::Begin("Setting");
-
-		ImGui::RadioButton("Final Output", &userInput.renderMode, 0);;
-		ImGui::RadioButton("Local Light Spheres", &userInput.renderMode, 5);
+		ImGui::Checkbox("N local light in one shader", &userInput.lightLoop);
+		ImGui::NewLine();
+		ImGui::RadioButton("Final Output", &userInput.renderMode, 0);
 		ImGui::NewLine();
 		ImGui::Text("G-Buffer attachment view");
 		ImGui::RadioButton("Position", &userInput.renderMode, 1); ImGui::SameLine();
@@ -34,7 +35,6 @@ public:
 		ImGui::RadioButton("Diffuse", &userInput.renderMode, 3); ImGui::SameLine();
 		ImGui::RadioButton("Specular", &userInput.renderMode, 4);
 		
-
 		ImGui::End();
 		ImGui::Render();
 	}
@@ -42,6 +42,7 @@ public:
 	/* user input collection */
 	struct UserInput {
 		int renderMode = 0;
+		bool lightLoop = false;
 	} userInput;
 };
 
@@ -86,12 +87,17 @@ public:
 		vkDestroyDescriptorSetLayout(devices.device, descLayout, nullptr);
 		vkDestroyDescriptorPool(devices.device, gbufferDescPool, nullptr);
 		vkDestroyDescriptorSetLayout(devices.device, gbufferDescLayout, nullptr);
+		vkDestroyDescriptorPool(devices.device, localLightLoopDescPool, nullptr);
+		vkDestroyDescriptorSetLayout(devices.device, localLightLoopDescLayout, nullptr);
 
 		//uniform buffers
 		for (size_t i = 0; i < uniformBuffers.size(); ++i) {
 			devices.memoryAllocator.freeBufferMemory(uniformBuffers[i], 
 				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 			vkDestroyBuffer(devices.device, uniformBuffers[i], nullptr);
+			devices.memoryAllocator.freeBufferMemory(localLightUniformBuffers[i],
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+			vkDestroyBuffer(devices.device, localLightUniformBuffers[i], nullptr);
 		}
 
 		//pipelines
@@ -101,6 +107,8 @@ public:
 		vkDestroyPipelineLayout(devices.device, lightingPassPipelineLayout, nullptr);
 		vkDestroyPipeline(devices.device, localLightPipeline, nullptr);
 		vkDestroyPipelineLayout(devices.device, localLightPipelineLayout, nullptr);
+		vkDestroyPipeline(devices.device, localLightLoopPipeline, nullptr);
+		vkDestroyPipelineLayout(devices.device, localLightLoopPipelineLayout, nullptr);
 
 		//renderpass
 		vkDestroyRenderPass(devices.device, renderPass, nullptr);
@@ -119,8 +127,8 @@ public:
 	*/
 	virtual void initApp() override {
 		VulkanAppBase::initApp();
-		camera.camPos = glm::vec3(1, 3, 5);
-		camera.camFront = glm::normalize(glm::vec3(-1, -2, -5));
+		camera.camPos = glm::vec3(1, 4, 10);
+		camera.camFront = glm::normalize(glm::vec3(-1, -3, -10));
 		camera.camUp = glm::vec3(0.f, 1.f, 0.f);
 
 		//models
@@ -134,80 +142,38 @@ public:
 		/*
 		* local lights
 		*/
-		float radius = 3.f;
-		glm::vec3 lightPos = glm::vec3(-2, 1, 2);
-		localLightPushConstants.push_back({
-			glm::translate(glm::mat4(1.f), lightPos) * glm::scale(glm::mat4(1.f), glm::vec3(radius)),
-			glm::vec3(10.f, 0.f, 0.f),
-			radius,
-			glm::vec4(lightPos, 1),
-			camera.camPos
-		});
+		float range = static_cast<float>(LOCAL_LIGHTS_COUNT_SQRT / 2);
+		for (float z = -range; z < range; ++z) {
+			for (float x = -range; x < range; ++x) {
+				float radius = static_cast<float>(rdFloat(RNGen) * 2.5f);
+				glm::vec3 lightPos = glm::vec3(x * 0.5f, 1.5f + (rdFloat(RNGen) - 0.5), z * 0.5f);
+				glm::vec3 lightColor = glm::vec3(rdFloat(RNGen), rdFloat(RNGen), rdFloat(RNGen));
 
-		radius = 3.f;
-		lightPos = glm::vec3(2, 1, 2);
-		localLightPushConstants.push_back({
-			glm::translate(glm::mat4(1.f), lightPos) * glm::scale(glm::mat4(1.f), glm::vec3(radius)),
-			glm::vec3(50.f, 10.f, 0.f),
-			radius,
-			glm::vec4(lightPos, 1),
-			camera.camPos
-		});
-
-		radius = 2.f;
-		lightPos = glm::vec3(0, 1, -2);
-		localLightPushConstants.push_back({
-			glm::translate(glm::mat4(1.f), lightPos) * glm::scale(glm::mat4(1.f), glm::vec3(radius)),
-			glm::vec3(5.f, 5.f, 20.f),
-			radius,
-			glm::vec4(lightPos, 1),
-			camera.camPos
-			});
-
-		radius = 1.5f;
-		lightPos = glm::vec3(4, 1.5, 0.f);
-		localLightPushConstants.push_back({
-			glm::translate(glm::mat4(1.f), lightPos) * glm::scale(glm::mat4(1.f), glm::vec3(radius)),
-			glm::vec3(2.f, 10.f, 12.f),
-			radius,
-			glm::vec4(lightPos, 1),
-			camera.camPos
-			});
-
-		radius = 1.5f;
-		lightPos = glm::vec3(-3.5, 0.75, 0.f);
-		localLightPushConstants.push_back({
-			glm::translate(glm::mat4(1.f), lightPos) * glm::scale(glm::mat4(1.f), glm::vec3(radius)),
-			glm::vec3(2.f, 10.f, 2.f),
-			radius,
-			glm::vec4(lightPos, 1),
-			camera.camPos
-			});
+				localLightInfo.push_back({
+					glm::translate(glm::mat4(1.f), lightPos) * glm::scale(glm::mat4(1.f), glm::vec3(radius)),
+					lightColor * 2.f,
+					radius,
+					glm::vec4(lightPos, 1)
+				});
+			}
+		}
 
 		/*
 		* model transforms
 		*/
-		objPushConstants.push_back({
-			glm::translate(glm::mat4(1.f), glm::vec3(-2.f, 0.5f, 0.f)),
-			glm::vec3(0.75f, 0.25f, 0.25f), //red
-			0.1f,
-			glm::vec3(0.02f, 0.02f, 0.02f), //water
-			0.1f
-		});
-		objPushConstants.push_back({
-			glm::translate(glm::mat4(1.f), glm::vec3(0.f, 0.5f, 0.f)),
-			glm::vec3(0.25f, 0.75f, 0.25f), //green
-			0.5f,
-			glm::vec3(0.17f, 0.17f, 0.17f), //diamond
-			0.5f
-		});
-		objPushConstants.push_back({
-			glm::translate(glm::mat4(1.f), glm::vec3(2.f, 0.5f, 0.f)),
-			glm::vec3(0.25f, 0.25f, 0.75f), //green
-			0.5f,
-			glm::vec3(0.17f, 0.17f, 0.17f), //diamond
-			0.5f
-		});
+		range = static_cast<float>(BUNNY_COUNT_SQRT / 2);
+		for (float z = -range; z < range + 1; ++z) {
+			for (float x = -range; x < range + 1; ++x) {
+				objPushConstants.push_back({
+					glm::translate(glm::mat4(1.f), glm::vec3(x * 1.7f, 0.5f, z * 1.7f)), //model transform
+					glm::vec3(0.15f, 0.15f, 0.15f), //color
+					0.1f,
+					glm::vec3(0.02f, 0.02f, 0.02f), //water
+					0.1f
+				});
+			}
+		}
+		//floor
 		objPushConstants.push_back({
 			glm::scale(glm::mat4(1.f), glm::vec3(20.f, 1.f, 20.f)),
 			glm::vec3(0.5f, 0.5f, 0.5f), //grey
@@ -299,15 +265,37 @@ private:
 	*/
 	VkPipeline localLightPipeline = VK_NULL_HANDLE;
 	VkPipelineLayout localLightPipelineLayout = VK_NULL_HANDLE;
-	struct LocalLightPushConstant {
+	struct LocalLightInfo {
 		glm::mat4 model;
 		glm::vec3 color;
 		float radius = 0.f;
 		glm::vec4 lightCenter{ 0, 0, 0, 0 };
+	};
+	std::vector<LocalLightInfo> localLightInfo;
+	struct LocalLightInfoPushConstant {
+		LocalLightInfo lightInfo;
 		glm::vec3 camPos;
 		int renderMode = 0;
-	};
-	std::vector<LocalLightPushConstant> localLightPushConstants;
+	} localLightPushConstant;
+
+	/*
+	* for comparison: multiple sphere (N) drawing vs. N iteration in one shader
+	*/
+	/** pipeline */
+	VkPipeline localLightLoopPipeline = VK_NULL_HANDLE;
+	VkPipelineLayout localLightLoopPipelineLayout = VK_NULL_HANDLE;
+	/** descriptor sets */
+	DescriptorSetBindings localLightLoopBindings;
+	VkDescriptorPool localLightLoopDescPool = VK_NULL_HANDLE;
+	VkDescriptorSetLayout localLightLoopDescLayout = VK_NULL_HANDLE;
+	std::vector<VkDescriptorSet> localLightLoopDescSets;
+	/** local lights uniform buffers */
+	std::vector<VkBuffer> localLightUniformBuffers;
+	std::vector<MemoryAllocator::HostVisibleMemory> localLightUniformBufferMemories;
+	struct LocalLightLoopPushConstant {
+		LightingPassPushConstant lightPassPushConstant;
+		int nbLight = 0;
+	}localLightLoopPushConstant;
 
 	/*
 	* called every frame - submit queues
@@ -431,12 +419,10 @@ private:
 	* create procedural generated sphere
 	*/
 	void createSphereModel() {
-		const unsigned int division = 64;
+		const unsigned int division = 32;
 		const float PI = 3.141592f;
 		size_t vertexCount = (division + 1) * (division + 1);
 		std::vector<glm::vec3> positions;
-		/*std::vector<glm::vec3> normals;
-		std::vector<glm::vec2> uvs;*/
 
 		//vertex data
 		for (unsigned int y = 0; y <= division; ++y) {
@@ -448,11 +434,7 @@ private:
 				float zPos = std::sin(theta * 2.f * PI) * std::sin(phi * PI);
 
 				glm::vec3 pos = glm::vec3(xPos, yPos, zPos);
-				/*glm::vec3 normal = glm::vec3(xPos, yPos, zPos);
-				glm::vec2 uv = glm::vec2(theta, phi);*/
 				positions.push_back(pos);
-				/*normals.push_back(normal);
-				uvs.push_back(uv);*/
 			}
 		}
 
@@ -576,7 +558,7 @@ private:
 		gen.addVertexInputAttributeDescription(sphere.getAttributeDescriptions());
 		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/local_lights_vert.spv")), VK_SHADER_STAGE_VERTEX_BIT);
 		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/local_lights_frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
-		gen.addPushConstantRange({ VkPushConstantRange{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(LocalLightPushConstant)} });
+		gen.addPushConstantRange({ VkPushConstantRange{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(LocalLightInfoPushConstant)} });
 		gen.addDescriptorSetLayout({ descLayout, gbufferDescLayout });
 		gen.setDepthStencilInfo(VK_FALSE, VK_FALSE);
 		gen.setColorBlendInfo(VK_TRUE);
@@ -595,6 +577,16 @@ private:
 		//gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE);
 		gen.generate(renderPass, &localLightPipeline, &localLightPipelineLayout);
 		gen.resetAll();
+
+		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/full_quad_vert.spv")), VK_SHADER_STAGE_VERTEX_BIT);
+		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/local_lights_loop_frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
+		gen.addPushConstantRange({ VkPushConstantRange{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(LocalLightLoopPushConstant)} });
+		gen.addDescriptorSetLayout({ localLightLoopDescLayout, gbufferDescLayout });
+		gen.setDepthStencilInfo(VK_FALSE, VK_FALSE);
+		gen.setColorBlendInfo(VK_TRUE);
+		gen.setColorBlendAttachmentState(blendState);
+		gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE);
+		gen.generate(renderPass, &localLightLoopPipeline, &localLightLoopPipelineLayout);
 
 		LOG("created:\tpipelines")
 	}
@@ -676,7 +668,7 @@ private:
 			vkCmdBindIndexBuffer(commandBuffers[i], bunnyBuffer, bunny.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
 
 			//bunny
-			for (int instance = 0; instance < BUNNY_COUNT; ++instance) {
+			for (int instance = 0; instance < BUNNY_COUNT_SQRT* BUNNY_COUNT_SQRT; ++instance) {
 				vkCmdPushConstants(commandBuffers[i], geometryPassPipelineLayout,
 					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ObjPushConstant), &objPushConstants[instance]);
 				vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(bunny.indices.size()), 1, 0, 0, 0);
@@ -686,7 +678,7 @@ private:
 			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &floorBuffer, &offsets);
 			vkCmdBindIndexBuffer(commandBuffers[i], floorBuffer, floor.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
 			vkCmdPushConstants(commandBuffers[i], geometryPassPipelineLayout,
-				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ObjPushConstant), &objPushConstants[BUNNY_COUNT]);
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ObjPushConstant), &objPushConstants[BUNNY_COUNT_SQRT*BUNNY_COUNT_SQRT]);
 			vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(floor.indices.size()), 1, 0, 0, 0);
 
 			vkCmdEndRenderPass(commandBuffers[i]);
@@ -710,27 +702,48 @@ private:
 			//vkCmdEndRenderPass(commandBuffers[i]);
 			vkdebug::marker::endLabel(commandBuffers[i]);
 
-			/*
-			* small local lights
-			*/
-			vkdebug::marker::beginLabel(commandBuffers[i], "Local Lights");
-			//vkCmdBeginRenderPass(commandBuffers[i], &lightingPassRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-			vktools::setViewportScissorDynamicStates(commandBuffers[i], swapchain.extent);
-			vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, localLightPipeline);
-			std::array<VkDescriptorSet, 2> localLightDescs{ descSets[currentFrame] , gbufferDescSets[currentFrame] };
-			vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
-				localLightPipelineLayout, 0, static_cast<uint32_t>(localLightDescs.size()), localLightDescs.data(), 0, nullptr);
-			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &sphereBuffer, &offsets);
-			vkCmdBindIndexBuffer(commandBuffers[i], sphereBuffer, sphere.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
-			for (size_t lightIndex = 0; lightIndex < localLightPushConstants.size(); ++lightIndex) {
-				localLightPushConstants[lightIndex].camPos = camera.camPos;
-				localLightPushConstants[lightIndex].renderMode = imgui->userInput.renderMode;
-				vkCmdPushConstants(commandBuffers[i], localLightPipelineLayout,
-					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-					0, sizeof(LocalLightPushConstant), &localLightPushConstants[lightIndex]);
-				vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(sphere.indices.size()), 1, 0, 0, 0);
+			if (imgui->userInput.lightLoop == false) {
+				/*
+				* small local lights
+				*/
+				vkdebug::marker::beginLabel(commandBuffers[i], "Local Lights");
+				//vkCmdBeginRenderPass(commandBuffers[i], &lightingPassRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+				vktools::setViewportScissorDynamicStates(commandBuffers[i], swapchain.extent);
+				vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, localLightPipeline);
+				std::array<VkDescriptorSet, 2> localLightDescs{ descSets[currentFrame] , gbufferDescSets[currentFrame] };
+				vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
+					localLightPipelineLayout, 0, static_cast<uint32_t>(localLightDescs.size()), localLightDescs.data(), 0, nullptr);
+				vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &sphereBuffer, &offsets);
+				vkCmdBindIndexBuffer(commandBuffers[i], sphereBuffer, sphere.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
+				for (size_t lightIndex = 0; lightIndex < localLightInfo.size(); ++lightIndex) {
+					localLightPushConstant.lightInfo = localLightInfo[lightIndex];
+					localLightPushConstant.camPos = camera.camPos;
+					localLightPushConstant.renderMode = imgui->userInput.renderMode;
+					vkCmdPushConstants(commandBuffers[i], localLightPipelineLayout,
+						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+						0, sizeof(localLightPushConstant), &localLightPushConstant);
+					vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(sphere.indices.size()), 1, 0, 0, 0);
+				}
+				vkdebug::marker::endLabel(commandBuffers[i]);
 			}
-			vkdebug::marker::endLabel(commandBuffers[i]);
+			else {
+				/*
+				* small local lights (loop version)
+				*/
+				vkdebug::marker::beginLabel(commandBuffers[i], "Local Lights Loop");
+				//vkCmdBeginRenderPass(commandBuffers[i], &lightingPassRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+				vktools::setViewportScissorDynamicStates(commandBuffers[i], swapchain.extent);
+				vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, localLightLoopPipeline);
+				std::array<VkDescriptorSet, 2> localLightLoopDescs{ localLightLoopDescSets[currentFrame] , gbufferDescSets[currentFrame] };
+				vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
+					localLightLoopPipelineLayout, 0, static_cast<uint32_t>(localLightLoopDescs.size()), localLightLoopDescs.data(), 0, nullptr);
+				localLightLoopPushConstant.lightPassPushConstant = lightingPassPushConstant;
+				localLightLoopPushConstant.nbLight = LOCAL_LIGHTS_COUNT_SQRT * LOCAL_LIGHTS_COUNT_SQRT;
+				vkCmdPushConstants(commandBuffers[i], localLightLoopPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+					0, sizeof(localLightLoopPushConstant), &localLightLoopPushConstant);
+				vkCmdDraw(commandBuffers[i], 3, 1, 0, 0);
+				vkdebug::marker::endLabel(commandBuffers[i]);
+			}
 
 			/*
 			* imgui
@@ -753,16 +766,27 @@ private:
 		for (size_t i = 0; i < uniformBuffers.size(); ++i) {
 			devices.memoryAllocator.freeBufferMemory(uniformBuffers[i], bufferFlags);
 			vkDestroyBuffer(devices.device, uniformBuffers[i], nullptr);
+			devices.memoryAllocator.freeBufferMemory(localLightUniformBuffers[i], bufferFlags);
+			vkDestroyBuffer(devices.device, localLightUniformBuffers[i], nullptr);
 		}
 		uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
 		uniformBufferMemories.resize(MAX_FRAMES_IN_FLIGHT);
+		localLightUniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+		localLightUniformBufferMemories.resize(MAX_FRAMES_IN_FLIGHT);
 
-		VkBufferCreateInfo info = vktools::initializers::bufferCreateInfo(sizeof(CameraMatrices),
+		VkBufferCreateInfo camUniformBufferInfo = vktools::initializers::bufferCreateInfo(sizeof(CameraMatrices),
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+		VkBufferCreateInfo lightUniformBufferInfo = vktools::initializers::bufferCreateInfo(
+			sizeof(localLightInfo[0]) * localLightInfo.size(),
 			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-			VK_CHECK_RESULT(vkCreateBuffer(devices.device, &info, nullptr, &uniformBuffers[i]));
-			uniformBufferMemories[i] = devices.memoryAllocator.allocateBufferMemory(uniformBuffers[i], bufferFlags);
+			VK_CHECK_RESULT(vkCreateBuffer(devices.device, &camUniformBufferInfo, nullptr, &uniformBuffers[i]));
+			uniformBufferMemories[i] = 
+				devices.memoryAllocator.allocateBufferMemory(uniformBuffers[i], bufferFlags);
+			VK_CHECK_RESULT(vkCreateBuffer(devices.device, &lightUniformBufferInfo, nullptr, &localLightUniformBuffers[i]));
+			localLightUniformBufferMemories[i] = 
+				devices.memoryAllocator.allocateBufferMemory(localLightUniformBuffers[i], bufferFlags);
 		}
 	}
 
@@ -773,6 +797,7 @@ private:
 	*/
 	void updateUniformBuffer(size_t currentFrame) {
 		uniformBufferMemories[currentFrame].mapData(devices.device, &cameraMatrices);
+		localLightUniformBufferMemories[currentFrame].mapData(devices.device, localLightInfo.data());
 	}
 
 	/*
@@ -783,6 +808,8 @@ private:
 		vkDestroyDescriptorSetLayout(devices.device, descLayout, nullptr);
 		vkDestroyDescriptorPool(devices.device, gbufferDescPool, nullptr);
 		vkDestroyDescriptorSetLayout(devices.device, gbufferDescLayout, nullptr);
+		vkDestroyDescriptorPool(devices.device, localLightLoopDescPool, nullptr);
+		vkDestroyDescriptorSetLayout(devices.device, localLightLoopDescLayout, nullptr);
 
 		descBindings.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT);
 		descPool	= descBindings.createDescriptorPool(devices.device, MAX_FRAMES_IN_FLIGHT);
@@ -796,6 +823,11 @@ private:
 		gbufferDescPool = gbufferDescBindings.createDescriptorPool(devices.device, MAX_FRAMES_IN_FLIGHT);
 		gbufferDescLayout = gbufferDescBindings.createDescriptorSetLayout(devices.device);
 		gbufferDescSets = vktools::allocateDescriptorSets(devices.device, gbufferDescLayout, gbufferDescPool, MAX_FRAMES_IN_FLIGHT);
+
+		localLightLoopBindings.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		localLightLoopDescPool = localLightLoopBindings.createDescriptorPool(devices.device, MAX_FRAMES_IN_FLIGHT);
+		localLightLoopDescLayout = localLightLoopBindings.createDescriptorSetLayout(devices.device);
+		localLightLoopDescSets = vktools::allocateDescriptorSets(devices.device, localLightLoopDescLayout, localLightLoopDescPool, MAX_FRAMES_IN_FLIGHT);
 	}
 
 	/*
@@ -830,10 +862,16 @@ private:
 				geometryFramebuffers[i].attachments[3].imageView,
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			};
+
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 0, &posAttachmentInfo));
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 1, &normalAttachmentInfo));
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 2, &diffuseAttachmentInfo));
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 3, &specularAttachmentInfo));
+
+			//localLightLoopDescSets - 1 uniform buffer
+			VkDescriptorBufferInfo localLightUniformInfo{ localLightUniformBuffers[i], 0,
+				sizeof(localLightInfo[0]) * localLightInfo.size() };
+			writes.push_back(localLightLoopBindings.makeWrite(localLightLoopDescSets[i], 0, &localLightUniformInfo));
 
 			vkUpdateDescriptorSets(devices.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 		}

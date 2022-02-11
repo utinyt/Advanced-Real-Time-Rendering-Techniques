@@ -44,5 +44,14 @@
     <None Include="shaders\local_lights.vert">
       <Filter>Source Files\shaders</Filter>
     </None>
+    <None Include="shaders\local_lights_loop.frag">
+      <Filter>Source Files\shaders</Filter>
+    </None>
+    <None Include="shaders\local_lights_loop.vert">
+      <Filter>Source Files\shaders</Filter>
+    </None>
+    <None Include="shaders\tonemapping.frag">
+      <Filter>Source Files\shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>
