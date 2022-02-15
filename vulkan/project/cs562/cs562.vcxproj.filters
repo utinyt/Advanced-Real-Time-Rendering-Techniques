@@ -59,5 +59,8 @@
     <None Include="shaders\shadow_map.vert">
       <Filter>Source Files\shaders</Filter>
     </None>
+    <None Include="shaders\shadow_map_blur.comp">
+      <Filter>Source Files\shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

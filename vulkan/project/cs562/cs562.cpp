@@ -59,6 +59,7 @@ public:
 		imguiBase = new Imgui;
 		MAX_FRAMES_IN_FLIGHT = 2;
 		buildCommandBufferEveryFrame = true;
+		
 	}
 
 	/*
@@ -79,6 +80,13 @@ public:
 		for (auto& framebuffer : shadowMaps) {
 			framebuffer.cleanup();
 		}
+		for (auto& imageView : shadowMapBlurImageViews) {
+			vkDestroyImageView(devices.device, imageView, nullptr);
+		}
+		for (auto& image : shadowMapBlurImages) {
+			devices.memoryAllocator.freeImageMemory(image, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+			vkDestroyImage(devices.device, image, nullptr);
+		}
 
 		//models
 		devices.memoryAllocator.freeBufferMemory(bunnyBuffer, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -93,12 +101,19 @@ public:
 		vkDestroyDescriptorSetLayout(devices.device, descLayout, nullptr);
 		vkDestroyDescriptorPool(devices.device, gbufferDescPool, nullptr);
 		vkDestroyDescriptorSetLayout(devices.device, gbufferDescLayout, nullptr);
+		vkDestroyDescriptorPool(devices.device, computeDescHorizontalPool, nullptr);
+		vkDestroyDescriptorSetLayout(devices.device, computeDescHorizontalSetLayout, nullptr);
+		vkDestroyDescriptorPool(devices.device, computeDescVerticalPool, nullptr);
+		vkDestroyDescriptorSetLayout(devices.device, computeDescVerticalSetLayout, nullptr);
 
 		//uniform buffers
 		for (size_t i = 0; i < uniformBuffers.size(); ++i) {
 			devices.memoryAllocator.freeBufferMemory(uniformBuffers[i], 
 				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 			vkDestroyBuffer(devices.device, uniformBuffers[i], nullptr);
+			devices.memoryAllocator.freeBufferMemory(blurKernelBuffers[i],
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+			vkDestroyBuffer(devices.device, blurKernelBuffers[i], nullptr);
 		}
 
 		//pipelines
@@ -110,6 +125,8 @@ public:
 		vkDestroyPipelineLayout(devices.device, localLightPipelineLayout, nullptr);
 		vkDestroyPipeline(devices.device, shadowMapPipeline, nullptr);
 		vkDestroyPipelineLayout(devices.device, shadowMapPipelineLayout, nullptr);
+		vkDestroyPipeline(devices.device, computePipeline, nullptr);
+		vkDestroyPipelineLayout(devices.device, computePipelineLayout, nullptr);
 
 		//renderpass
 		vkDestroyRenderPass(devices.device, renderPass, nullptr);
@@ -132,6 +149,8 @@ public:
 		camera.camPos = glm::vec3(-4, 4, 10);
 		camera.camFront = glm::normalize(glm::vec3(4, -3, -10));
 		camera.camUp = glm::vec3(0.f, 1.f, 0.f);
+
+		separatedComputeQueue = devices.indices.computeFamily.value() != devices.indices.graphicsFamily.value();
 
 		//models
 		bunny.load("../../meshes/bunny.obj");
@@ -196,6 +215,7 @@ public:
 
 		//create shadow map render targets
 		createShadowMapFramebuffer();
+		createShadowMapBlurImages();
 
 		//geometry pass render targets
 		createGeometryPassFramebuffer();
@@ -299,21 +319,46 @@ private:
 	/*
 	* shadow map resources
 	*/
-	//light matrices
+	/** light matrices */
 	glm::mat4 lightView{};
 	glm::mat4 lightProj{};
-	//shadow map images (framebuffer)
+	/** shadow map images (framebuffer) */
 	std::vector<Framebuffer> shadowMaps;
-	//pipeline
+	/** pipeline */
 	VkPipeline shadowMapPipeline = VK_NULL_HANDLE;
 	VkPipelineLayout shadowMapPipelineLayout = VK_NULL_HANDLE;
-	//render pass
+	/** render pass */
 	VkRenderPass shadowMapRenderPass = VK_NULL_HANDLE;
-	//push constant
+	/** push constant */
 	struct ShadowMapPushConstant {
 		glm::mat4 model;
 		glm::mat4 lightProjView;
 	}shadowMapPushConstant;
+
+	/*
+	* compute resources
+	*/
+	/** pipeline */
+	VkPipeline computePipeline = VK_NULL_HANDLE;
+	VkPipelineLayout computePipelineLayout = VK_NULL_HANDLE;
+	/** render targets for blur */
+	std::vector<VkImage> shadowMapBlurImages{};
+	std::vector<VkImageView> shadowMapBlurImageViews{};
+	/** descriptor */
+	DescriptorSetBindings computeDescHorizontalBindings;
+	VkDescriptorPool computeDescHorizontalPool = VK_NULL_HANDLE;
+	VkDescriptorSetLayout computeDescHorizontalSetLayout = VK_NULL_HANDLE;
+	std::vector<VkDescriptorSet> computeDescHorizontalSets{};
+	DescriptorSetBindings computeDescVerticalBindings;
+	VkDescriptorPool computeDescVerticalPool = VK_NULL_HANDLE;
+	VkDescriptorSetLayout computeDescVerticalSetLayout = VK_NULL_HANDLE;
+	std::vector<VkDescriptorSet> computeDescVerticalSets{};
+	/** blur kernel uniform buffers */
+	std::vector<VkBuffer> blurKernelBuffers;
+	std::vector<MemoryAllocator::HostVisibleMemory> blurKernelMemories;
+	std::array<float, 101> blurKernel{};
+	/** separated compute queue indicator */
+	bool separatedComputeQueue = false;
 
 	/*
 	* called every frame - submit queues
@@ -357,6 +402,49 @@ private:
 	}
 
 	/*
+	* create images fpr shadow map blur output (or input for second pass)
+	*/
+	void createShadowMapBlurImages() {
+		//clear
+		for (auto& imageView : shadowMapBlurImageViews) {
+			vkDestroyImageView(devices.device, imageView, nullptr);
+		}
+		for (auto& image : shadowMapBlurImages) {
+			vkDestroyImage(devices.device, image, nullptr);
+		}
+		shadowMapBlurImageViews.resize(MAX_FRAMES_IN_FLIGHT);
+		shadowMapBlurImages.resize(MAX_FRAMES_IN_FLIGHT);
+
+		//create images & image views
+		//image transition from undefined -> general
+		VkCommandBuffer cmdBuf = devices.beginCommandBuffer();
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+			devices.createImage(shadowMapBlurImages[i],
+				{ SHADOW_MAP_DIM, SHADOW_MAP_DIM, 1 },
+				VK_FORMAT_R32G32B32A32_SFLOAT,
+				VK_IMAGE_TILING_OPTIMAL,
+				VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+				1,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+			);
+			shadowMapBlurImageViews[i] = vktools::createImageView(devices.device,
+				shadowMapBlurImages[i],
+				VK_IMAGE_VIEW_TYPE_2D,
+				VK_FORMAT_R32G32B32A32_SFLOAT,
+				VK_IMAGE_ASPECT_COLOR_BIT,
+				1
+			);
+			vktools::setImageLayout(cmdBuf,
+				shadowMapBlurImages[i],
+				VK_IMAGE_LAYOUT_UNDEFINED,
+				VK_IMAGE_LAYOUT_GENERAL,
+				{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
+			);
+		}
+		devices.endCommandBuffer(cmdBuf);
+	}
+
+	/*
 	* create shadow map framebuffer
 	*/
 	void createShadowMapFramebuffer(bool createRenderPass = true) {
@@ -374,13 +462,13 @@ private:
 		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
 			shadowMaps[i].init(&devices);
 			VkImageCreateInfo imageInfo = vktools::initializers::imageCreateInfo({ SHADOW_MAP_DIM, SHADOW_MAP_DIM, 1 },
-				VK_FORMAT_R32_SFLOAT,
+				VK_FORMAT_R32G32B32A32_SFLOAT,
 				VK_IMAGE_TILING_OPTIMAL,
-				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
 				1);
 
 			//depth (color)
-			shadowMaps[i].addAttachment(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+			shadowMaps[i].addAttachment(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_IMAGE_LAYOUT_GENERAL, true);
 			//depth
 			imageInfo.format = depthFormat;
 			imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
@@ -414,7 +502,7 @@ private:
 			dependencies[1].srcAccessMask =
 				VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
 				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-			dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			dependencies[1].dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 			dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 			dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
@@ -690,7 +778,23 @@ private:
 		gen.setDepthStencilInfo();
 		gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT);
 		gen.generate(shadowMapRenderPass, &shadowMapPipeline, &shadowMapPipelineLayout);
-		LOG("created:\tpipelines")
+
+		/*
+		* compute pipeline
+		*/
+		std::vector<VkDescriptorSetLayout> layouts{ computeDescHorizontalSetLayout };
+		std::vector<VkPushConstantRange> ranges{ {VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(int))} };
+		VkPipelineLayoutCreateInfo computePipelineCreateInfo = vktools::initializers::pipelineLayoutCreateInfo(layouts, ranges);
+		VK_CHECK_RESULT(vkCreatePipelineLayout(devices.device, &computePipelineCreateInfo, nullptr, &computePipelineLayout));
+
+		VkComputePipelineCreateInfo computePipelineInfo{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+		computePipelineInfo.layout = computePipelineLayout;
+		VkShaderModule blurComputeModule = vktools::createShaderModule(devices.device, vktools::readFile("shaders/shadow_map_blur_comp.spv"));
+		computePipelineInfo.stage = vktools::initializers::pipelineShaderStageCreateInfo(VK_SHADER_STAGE_COMPUTE_BIT, blurComputeModule);
+		VK_CHECK_RESULT(vkCreateComputePipelines(devices.device, VK_NULL_HANDLE, 1, &computePipelineInfo, nullptr, &computePipeline));
+
+		vkDestroyShaderModule(devices.device, blurComputeModule, nullptr);
+		LOG("created:\tpipelines");
 	}
 
 	/*
@@ -823,6 +927,62 @@ private:
 			vkCmdEndRenderPass(commandBuffers[i]);
 			vkdebug::marker::endLabel(commandBuffers[i]);
 
+			if (separatedComputeQueue == false) {
+				VkImageMemoryBarrier imageBarrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+				imageBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+				imageBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+				imageBarrier.image = shadowMaps[currentFrame].attachments[0].image;
+				imageBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+				imageBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+				imageBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				/*vkCmdPipelineBarrier(commandBuffers[i],
+					VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+					0,
+					0, nullptr,
+					0, nullptr,
+					1, &imageBarrier
+				);*/
+
+				vkdebug::marker::beginLabel(commandBuffers[i], "Horizontal Blur Shadow Map");
+				vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+				vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout,
+					0, 1, &computeDescHorizontalSets[currentFrame], 0, 0);
+				bool horizontalBlur = true; //false for vertical blur
+				vkCmdPushConstants(commandBuffers[i], computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int), &horizontalBlur);
+				vkCmdDispatch(commandBuffers[i], SHADOW_MAP_DIM / 128, SHADOW_MAP_DIM, 1); //local_group_x = 128
+				vkdebug::marker::endLabel(commandBuffers[i]);
+				imageBarrier.image = shadowMapBlurImages[currentFrame];
+				vkCmdPipelineBarrier(commandBuffers[i],
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+					0,
+					0, nullptr,
+					0, nullptr,
+					1, &imageBarrier
+				);
+
+				vkdebug::marker::beginLabel(commandBuffers[i], "Vertical Blur Shadow Map");
+				vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout,
+					0, 1, &computeDescVerticalSets[currentFrame], 0, 0);
+				horizontalBlur = false; //false for vertical blur
+				vkCmdPushConstants(commandBuffers[i], computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int), &horizontalBlur);
+				vkCmdDispatch(commandBuffers[i], SHADOW_MAP_DIM / 128, SHADOW_MAP_DIM, 1); //local_group_x = 128
+				vkdebug::marker::endLabel(commandBuffers[i]);
+
+				imageBarrier.image = shadowMaps[currentFrame].attachments[0].image;
+				vkCmdPipelineBarrier(commandBuffers[i],
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+					0,
+					0, nullptr,
+					0, nullptr,
+					1, &imageBarrier
+				);
+			}
+
 			/*
 			* lighting pass
 			*/
@@ -890,20 +1050,29 @@ private:
 		for (size_t i = 0; i < uniformBuffers.size(); ++i) {
 			devices.memoryAllocator.freeBufferMemory(uniformBuffers[i], bufferFlags);
 			vkDestroyBuffer(devices.device, uniformBuffers[i], nullptr);
+			devices.memoryAllocator.freeBufferMemory(blurKernelBuffers[i], bufferFlags);
+			vkDestroyBuffer(devices.device, blurKernelBuffers[i], nullptr);
 		}
 		uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
 		uniformBufferMemories.resize(MAX_FRAMES_IN_FLIGHT);
+		blurKernelBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+		blurKernelMemories.resize(MAX_FRAMES_IN_FLIGHT);
 
 		VkBufferCreateInfo camUniformBufferInfo = vktools::initializers::bufferCreateInfo(sizeof(CameraMatrices),
 			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 		VkBufferCreateInfo lightUniformBufferInfo = vktools::initializers::bufferCreateInfo(
 			sizeof(localLightInfo[0]) * localLightInfo.size(),
 			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+		VkBufferCreateInfo blurKernelBufferInfo = vktools::initializers::bufferCreateInfo(sizeof(float) * blurKernel.size(),
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
 			VK_CHECK_RESULT(vkCreateBuffer(devices.device, &camUniformBufferInfo, nullptr, &uniformBuffers[i]));
 			uniformBufferMemories[i] = 
 				devices.memoryAllocator.allocateBufferMemory(uniformBuffers[i], bufferFlags);
+			VK_CHECK_RESULT(vkCreateBuffer(devices.device, &blurKernelBufferInfo, nullptr, &blurKernelBuffers[i]));
+			blurKernelMemories[i] =
+				devices.memoryAllocator.allocateBufferMemory(blurKernelBuffers[i], bufferFlags);
 		}
 	}
 
@@ -914,6 +1083,7 @@ private:
 	*/
 	void updateUniformBuffer(size_t currentFrame) {
 		uniformBufferMemories[currentFrame].mapData(devices.device, &cameraMatrices);
+		blurKernelMemories[currentFrame].mapData(devices.device, blurKernel.data());
 	}
 
 	/*
@@ -938,6 +1108,20 @@ private:
 		gbufferDescPool = gbufferDescBindings.createDescriptorPool(devices.device, MAX_FRAMES_IN_FLIGHT);
 		gbufferDescLayout = gbufferDescBindings.createDescriptorSetLayout(devices.device);
 		gbufferDescSets = vktools::allocateDescriptorSets(devices.device, gbufferDescLayout, gbufferDescPool, MAX_FRAMES_IN_FLIGHT);
+
+		computeDescHorizontalBindings.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+		computeDescHorizontalBindings.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+		computeDescHorizontalBindings.addBinding(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+		computeDescHorizontalPool = computeDescHorizontalBindings.createDescriptorPool(devices.device, MAX_FRAMES_IN_FLIGHT);
+		computeDescHorizontalSetLayout = computeDescHorizontalBindings.createDescriptorSetLayout(devices.device);
+		computeDescHorizontalSets = vktools::allocateDescriptorSets(devices.device, computeDescHorizontalSetLayout, computeDescHorizontalPool, MAX_FRAMES_IN_FLIGHT);
+
+		computeDescVerticalBindings.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+		computeDescVerticalBindings.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+		computeDescVerticalBindings.addBinding(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+		computeDescVerticalPool = computeDescVerticalBindings.createDescriptorPool(devices.device, MAX_FRAMES_IN_FLIGHT);
+		computeDescVerticalSetLayout = computeDescVerticalBindings.createDescriptorSetLayout(devices.device);
+		computeDescVerticalSets = vktools::allocateDescriptorSets(devices.device, computeDescVerticalSetLayout, computeDescVerticalPool, MAX_FRAMES_IN_FLIGHT);
 	}
 
 	/*
@@ -975,7 +1159,7 @@ private:
 			VkDescriptorImageInfo shadowMapAttachmentInfo{
 				sampler,
 				shadowMaps[i].attachments[0].imageView,
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				VK_IMAGE_LAYOUT_GENERAL
 			};
 
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 0, &posAttachmentInfo));
@@ -983,6 +1167,25 @@ private:
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 2, &diffuseAttachmentInfo));
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 3, &specularAttachmentInfo));
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 4, &shadowMapAttachmentInfo));
+			
+			//compute desc sets
+			VkDescriptorImageInfo shadowMapBlurHorizontalAttachmentSrcInfo{
+				sampler,
+				shadowMaps[i].attachments[0].imageView,
+				VK_IMAGE_LAYOUT_GENERAL
+			};
+			VkDescriptorImageInfo shadowMapBlurHorizontalAttachmentDstInfo{
+				sampler,
+				shadowMapBlurImageViews[i],
+				VK_IMAGE_LAYOUT_GENERAL
+			};
+			VkDescriptorBufferInfo blueKernelBufferInfo{ blurKernelBuffers[i], 0, VK_WHOLE_SIZE };
+			writes.push_back(computeDescHorizontalBindings.makeWrite(computeDescHorizontalSets[i], 0, &shadowMapBlurHorizontalAttachmentSrcInfo));
+			writes.push_back(computeDescHorizontalBindings.makeWrite(computeDescHorizontalSets[i], 1, &shadowMapBlurHorizontalAttachmentDstInfo));
+			writes.push_back(computeDescHorizontalBindings.makeWrite(computeDescHorizontalSets[i], 2, &blueKernelBufferInfo));
+			writes.push_back(computeDescVerticalBindings.makeWrite(computeDescVerticalSets[i], 0, &shadowMapBlurHorizontalAttachmentDstInfo)); //swapped
+			writes.push_back(computeDescVerticalBindings.makeWrite(computeDescVerticalSets[i], 1, &shadowMapBlurHorizontalAttachmentSrcInfo));
+			writes.push_back(computeDescVerticalBindings.makeWrite(computeDescVerticalSets[i], 2, &blueKernelBufferInfo));
 
 			vkUpdateDescriptorSets(devices.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 		}

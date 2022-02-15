@@ -332,7 +332,7 @@ namespace vktools {
 		}
 
 		inline VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo(
-			VkDescriptorSetLayout* setLayouts, uint32_t setLayoutsSize) {
+			const VkDescriptorSetLayout* setLayouts, uint32_t setLayoutsSize) {
 			VkPipelineLayoutCreateInfo info{};
 			info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 			info.setLayoutCount = setLayoutsSize;
