@@ -1,5 +1,6 @@
 #include <array>
 #include <random>
+#include <numeric>
 #include <include/imgui/imgui.h>
 #include "core/vulkan_app_base.h"
 #include "core/vulkan_mesh.h"
@@ -38,6 +39,15 @@ public:
 		ImGui::RadioButton("Pixel Depth", &userInput.renderMode, 3); ImGui::SameLine();
 		ImGui::RadioButton("Light Depth", &userInput.renderMode, 4);
 		
+		ImGui::NewLine();
+		ImGui::Text("Shadow Map Filter");
+		static int currentKernelWidth = 0;
+		ImGui::SliderInt("Kernel Width", &currentKernelWidth, 0, 50);
+		if (currentKernelWidth != userInput.kernelWidth) {
+			userInput.kernelWidth = currentKernelWidth;
+			userInput.shouldUpdateKernel = true;
+		}
+
 		ImGui::End();
 		ImGui::Render();
 	}
@@ -45,7 +55,9 @@ public:
 	/* user input collection */
 	struct UserInput {
 		int renderMode = 0;
+		int kernelWidth = -1;
 		bool disableLocalLight = false;
+		bool shouldUpdateKernel = true;
 	} userInput;
 };
 
@@ -196,7 +208,7 @@ public:
 		}
 		//floor
 		objPushConstants.push_back({
-			glm::scale(glm::mat4(1.f), glm::vec3(20.f, 1.f, 20.f)),
+			glm::scale(glm::mat4(1.f), glm::vec3(200.f, 1.f, 200.f)),
 			glm::vec3(0.5f, 0.5f, 0.5f), //grey
 			1.f,
 			glm::vec3(0.02f, 0.02f, 0.02f), //water
@@ -356,9 +368,14 @@ private:
 	/** blur kernel uniform buffers */
 	std::vector<VkBuffer> blurKernelBuffers;
 	std::vector<MemoryAllocator::HostVisibleMemory> blurKernelMemories;
-	std::array<float, 101> blurKernel{};
+	std::array<glm::vec4, 26> blurKernel{};
 	/** separated compute queue indicator */
 	bool separatedComputeQueue = false;
+	/** push constant */
+	struct BlurComputePushConstant {
+		int horizontalBlur = 1; //1 for true, 0 for false
+		int kernelWidth = 5;
+	} blurComputePushConstant;
 
 	/*
 	* called every frame - submit queues
@@ -387,6 +404,7 @@ private:
 	*/
 	void update() override {
 		VulkanAppBase::update();
+		updateBlurKernel();
 		updateUniformBuffer(currentFrame);
 		buildCommandBuffer();
 	}
@@ -399,6 +417,35 @@ private:
 		createGeometryPassFramebuffer(false);
 		createShadowMapFramebuffer(false);
 		updateDescriptorSets();
+	}
+
+	/*
+	* update blur kernel
+	*/
+	void updateBlurKernel() {
+		Imgui* imgui = static_cast<Imgui*>(imguiBase);
+		if (imgui->userInput.shouldUpdateKernel) {
+			imgui->userInput.shouldUpdateKernel = false;
+
+			const int width = imgui->userInput.kernelWidth;
+			float s = width / 2.f;
+			if (width == 0) {
+				s = 1;
+			}
+
+			float sum = 0;
+			for (int i = -width; i <= width; ++i) {
+				int vecIndex = (i + width) / 4;
+				int elementIndex = (i + width) % 4;
+				blurKernel[vecIndex][elementIndex] = static_cast<float>(exp(-0.5 * i * i / s / s));
+				sum += blurKernel[vecIndex][elementIndex];
+			}
+
+			for (auto& vec : blurKernel) {
+				vec /= sum;
+			}
+		}
+
 	}
 
 	/*
@@ -783,7 +830,7 @@ private:
 		* compute pipeline
 		*/
 		std::vector<VkDescriptorSetLayout> layouts{ computeDescHorizontalSetLayout };
-		std::vector<VkPushConstantRange> ranges{ {VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(int))} };
+		std::vector<VkPushConstantRange> ranges{ {VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(BlurComputePushConstant))} };
 		VkPipelineLayoutCreateInfo computePipelineCreateInfo = vktools::initializers::pipelineLayoutCreateInfo(layouts, ranges);
 		VK_CHECK_RESULT(vkCreatePipelineLayout(devices.device, &computePipelineCreateInfo, nullptr, &computePipelineLayout));
 
@@ -928,32 +975,24 @@ private:
 			vkdebug::marker::endLabel(commandBuffers[i]);
 
 			if (separatedComputeQueue == false) {
+				vkdebug::marker::beginLabel(commandBuffers[i], "Horizontal Blur Shadow Map");
+				vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+				vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout,
+					0, 1, &computeDescHorizontalSets[currentFrame], 0, 0);
+				blurComputePushConstant.horizontalBlur = 1; //0 for vertical blur
+				blurComputePushConstant.kernelWidth = imgui->userInput.kernelWidth;
+				vkCmdPushConstants(commandBuffers[i], computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(BlurComputePushConstant), &blurComputePushConstant);
+				vkCmdDispatch(commandBuffers[i], SHADOW_MAP_DIM / 128, SHADOW_MAP_DIM, 1); //local_group_x = 128
+				vkdebug::marker::endLabel(commandBuffers[i]);
+
 				VkImageMemoryBarrier imageBarrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
 				imageBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 				imageBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-				imageBarrier.image = shadowMaps[currentFrame].attachments[0].image;
 				imageBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 				imageBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 				imageBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 				imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				/*vkCmdPipelineBarrier(commandBuffers[i],
-					VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-					0,
-					0, nullptr,
-					0, nullptr,
-					1, &imageBarrier
-				);*/
-
-				vkdebug::marker::beginLabel(commandBuffers[i], "Horizontal Blur Shadow Map");
-				vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-				vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout,
-					0, 1, &computeDescHorizontalSets[currentFrame], 0, 0);
-				bool horizontalBlur = true; //false for vertical blur
-				vkCmdPushConstants(commandBuffers[i], computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int), &horizontalBlur);
-				vkCmdDispatch(commandBuffers[i], SHADOW_MAP_DIM / 128, SHADOW_MAP_DIM, 1); //local_group_x = 128
-				vkdebug::marker::endLabel(commandBuffers[i]);
 				imageBarrier.image = shadowMapBlurImages[currentFrame];
 				vkCmdPipelineBarrier(commandBuffers[i],
 					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -967,8 +1006,8 @@ private:
 				vkdebug::marker::beginLabel(commandBuffers[i], "Vertical Blur Shadow Map");
 				vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout,
 					0, 1, &computeDescVerticalSets[currentFrame], 0, 0);
-				horizontalBlur = false; //false for vertical blur
-				vkCmdPushConstants(commandBuffers[i], computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int), &horizontalBlur);
+				blurComputePushConstant.horizontalBlur = 0; //0 for vertical blur
+				vkCmdPushConstants(commandBuffers[i], computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(BlurComputePushConstant), &blurComputePushConstant);
 				vkCmdDispatch(commandBuffers[i], SHADOW_MAP_DIM / 128, SHADOW_MAP_DIM, 1); //local_group_x = 128
 				vkdebug::marker::endLabel(commandBuffers[i]);
 
@@ -1008,26 +1047,28 @@ private:
 			/*
 			* small local lights
 			*/
-			vkdebug::marker::beginLabel(commandBuffers[i], "Local Lights");
-			//vkCmdBeginRenderPass(commandBuffers[i], &lightingPassRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-			vktools::setViewportScissorDynamicStates(commandBuffers[i], swapchain.extent);
-			vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, localLightPipeline);
-			std::array<VkDescriptorSet, 2> localLightDescs{ descSets[currentFrame] , gbufferDescSets[currentFrame] };
-			vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
-				localLightPipelineLayout, 0, static_cast<uint32_t>(localLightDescs.size()), localLightDescs.data(), 0, nullptr);
-			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &sphereBuffer, &offsets);
-			vkCmdBindIndexBuffer(commandBuffers[i], sphereBuffer, sphere.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
-			for (size_t lightIndex = 0; lightIndex < localLightInfo.size(); ++lightIndex) {
-				localLightPushConstant.lightInfo = localLightInfo[lightIndex];
-				localLightPushConstant.camPos = camera.camPos;
-				localLightPushConstant.renderMode = imgui->userInput.renderMode;
-				localLightPushConstant.disable = imgui->userInput.disableLocalLight;
-				vkCmdPushConstants(commandBuffers[i], localLightPipelineLayout,
-					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-					0, sizeof(localLightPushConstant), &localLightPushConstant);
-				vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(sphere.indices.size()), 1, 0, 0, 0);
+			if (imgui->userInput.disableLocalLight == false) {
+				vkdebug::marker::beginLabel(commandBuffers[i], "Local Lights");
+				//vkCmdBeginRenderPass(commandBuffers[i], &lightingPassRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+				vktools::setViewportScissorDynamicStates(commandBuffers[i], swapchain.extent);
+				vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, localLightPipeline);
+				std::array<VkDescriptorSet, 2> localLightDescs{ descSets[currentFrame] , gbufferDescSets[currentFrame] };
+				vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
+					localLightPipelineLayout, 0, static_cast<uint32_t>(localLightDescs.size()), localLightDescs.data(), 0, nullptr);
+				vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &sphereBuffer, &offsets);
+				vkCmdBindIndexBuffer(commandBuffers[i], sphereBuffer, sphere.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
+				for (size_t lightIndex = 0; lightIndex < localLightInfo.size(); ++lightIndex) {
+					localLightPushConstant.lightInfo = localLightInfo[lightIndex];
+					localLightPushConstant.camPos = camera.camPos;
+					localLightPushConstant.renderMode = imgui->userInput.renderMode;
+					localLightPushConstant.disable = imgui->userInput.disableLocalLight;
+					vkCmdPushConstants(commandBuffers[i], localLightPipelineLayout,
+						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+						0, sizeof(localLightPushConstant), &localLightPushConstant);
+					vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(sphere.indices.size()), 1, 0, 0, 0);
+				}
+				vkdebug::marker::endLabel(commandBuffers[i]);
 			}
-			vkdebug::marker::endLabel(commandBuffers[i]);
 
 			/*
 			* imgui
@@ -1063,7 +1104,7 @@ private:
 		VkBufferCreateInfo lightUniformBufferInfo = vktools::initializers::bufferCreateInfo(
 			sizeof(localLightInfo[0]) * localLightInfo.size(),
 			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-		VkBufferCreateInfo blurKernelBufferInfo = vktools::initializers::bufferCreateInfo(sizeof(float) * blurKernel.size(),
+		VkBufferCreateInfo blurKernelBufferInfo = vktools::initializers::bufferCreateInfo(sizeof(glm::vec4) * blurKernel.size(),
 			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
@@ -1179,7 +1220,7 @@ private:
 				shadowMapBlurImageViews[i],
 				VK_IMAGE_LAYOUT_GENERAL
 			};
-			VkDescriptorBufferInfo blueKernelBufferInfo{ blurKernelBuffers[i], 0, VK_WHOLE_SIZE };
+			VkDescriptorBufferInfo blueKernelBufferInfo{ blurKernelBuffers[i], 0, sizeof(glm::vec4) * blurKernel.size() };
 			writes.push_back(computeDescHorizontalBindings.makeWrite(computeDescHorizontalSets[i], 0, &shadowMapBlurHorizontalAttachmentSrcInfo));
 			writes.push_back(computeDescHorizontalBindings.makeWrite(computeDescHorizontalSets[i], 1, &shadowMapBlurHorizontalAttachmentDstInfo));
 			writes.push_back(computeDescHorizontalBindings.makeWrite(computeDescHorizontalSets[i], 2, &blueKernelBufferInfo));
