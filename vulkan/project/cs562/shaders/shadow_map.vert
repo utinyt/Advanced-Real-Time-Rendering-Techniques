@@ -3,6 +3,8 @@
 layout(push_constant) uniform PS {
 	mat4 model;
 	mat4 lightProjView;
+	float depthMin;
+	float depthMax;
 };
 
 layout(location = 0) in vec3 inPos;

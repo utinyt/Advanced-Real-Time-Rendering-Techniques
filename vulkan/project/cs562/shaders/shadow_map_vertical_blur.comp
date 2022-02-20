@@ -21,7 +21,7 @@ vec4 blur(ivec2 gpos){
 	int xOffsetFactor = horizontalBlur;
 	int yOffsetFactor = xOffsetFactor == 1 ? 0 : 1;
 	int boundaryCheckIndex = xOffsetFactor == 1 ? 0 : 1;
-
+	
 	for(int i = -kernelWidth; i <= kernelWidth; ++i){
 		ivec2 pos = gpos + i * ivec2(xOffsetFactor, yOffsetFactor);
 
@@ -49,7 +49,7 @@ int boundaryCheck(int i){
 }
 
 void main(){
-	const ivec2 gpos = ivec2(gl_GlobalInvocationID.yx);
+	const ivec2 gpos = ivec2(gl_GlobalInvocationID.yx); //swapped (horizontal -> vertical)
 	const uint sharedMemoryIndex = gl_LocalInvocationID.x;
 
 	//image load to shared variables

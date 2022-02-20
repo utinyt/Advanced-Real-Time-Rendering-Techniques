@@ -13,10 +13,56 @@ layout(push_constant) uniform CamPos{
 	vec4 lightPos;
 	vec3 camPos;
 	int renderMode;
+	float depthMin;
+	float depthMax;
 };
 
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 col;
+
+/**
+* hamburger 4MSM
+* @param s - filtered sample from moment shadow map
+* @param zf - fragment depth
+* @return G - shadow value [0 ~ 1]
+*/
+float getShadowValueG(vec4 s, float zf){
+	float alpha = 0.0003f;
+	vec4 s_ = (1 - alpha) *s + alpha * vec4(.5f);
+	float zf2 = zf*zf;
+
+	//float a = 1;
+	float b = s_.x; //b1 / 1
+	float c = s_.y; //b2 / 1
+	float d = sqrt(s_.y - b*b);
+	float e = (s_.z - b*c) / d;
+	float f = sqrt(s_.w - c*c - e*e);
+	
+	//float c1_ = 1
+	float c2_ = (zf - b) / d;
+	float c3_ = (zf2 - c - e * c2_) / f;
+
+	float c3 = c3_ / f;
+	float c2 = (c2_ - e * c3) / d;
+	float c1 = (1 - b * c2 - c * c3);
+
+	//solve c3*z^2 + c2*z + c1 = 0
+	float det = sqrt(c2*c2 - 4*c3*c1);
+	float z2 = (-c2 - det) / (2 * c3);
+	float z3 = (-c2 + det) / (2 * c3);
+	if(z2 > z3){
+		float t = z2;
+		z2 = z3;
+		z3 = t;
+	}
+	
+	if(zf <= z2)
+		return 0;
+	else if(zf <= z3)
+		return (zf * z3 - s_.x * (zf + z3) + s_.y) / ((z3 - z2) * (zf - z2));
+	else
+		return (1 - ((z2 * z3 - s_.x * (z2+z3) + s_.y) / ((zf - z2) * zf - z3)) );
+}
 
 void main(){
 	float lightRadius = 100; //global (sphere) light radius
@@ -28,9 +74,6 @@ void main(){
 
 	vec4 shadowCoord = shadowMatrix * pos;
 	vec2 shadowIndex = shadowCoord.xy / shadowCoord.w;
-	vec4 blurredShadowMap = texture(shadowMap, shadowIndex);
-	float lightDepth = blurredShadowMap.r;
-	float pixelDepth = shadowCoord.w;
 
 	switch(renderMode){
 	case 1:
@@ -39,21 +82,9 @@ void main(){
 	case 2:
 		col = vec4(shadowIndex.xy, 0, 1.f);
 		return;
-	case 3:
-		col = vec4(vec3(pixelDepth / 50), 1.f);
-		return;
-	case 4:
-		col = vec4(vec3(lightDepth) / 50, 1.f);
-		return;
 	}
 
 	vec3 ambient = diffuseRoughness.xyz * 0.02;
-
-	//variance shadow mapping
-	float mean = blurredShadowMap.x;
-	float variance = max(blurredShadowMap.y - mean * mean, 0.000002);
-	float d = pixelDepth - mean;
-	float s = variance / (variance + d*d);
 
 	vec3 L = lightPos.xyz - pos.xyz;
 	float dist = length(L);
@@ -68,10 +99,12 @@ void main(){
 		shadowIndex.x >= 0 && shadowIndex.y >= 0 && //uv boundary [0 - 1] check
 		shadowIndex.x <= 1 && shadowIndex.y <= 1){
 
-		if(pixelDepth > mean){
-			col = vec4(Lo * s + ambient, 1.f);
-			return;
-		}
+		vec4 blurredShadowMap = texture(shadowMap, shadowIndex);
+		float relativeFragmentDepth = (shadowCoord.w - depthMin) / (depthMax - depthMin);
+		float G = getShadowValueG(blurredShadowMap, relativeFragmentDepth );
+		col = vec4(Lo * (1.0 - G) + ambient, 1.f);
+		//col = vec4(vec3(1.0 - G), 1.f);
+		return;
 	}
 
 	col = vec4(Lo + ambient, 1.f);

@@ -17,9 +17,10 @@ namespace {
 	std::random_device device;
 	std::mt19937_64 RNGen(device());
 	std::uniform_real_distribution<> rdFloat(0.0, 1.0);
-	int BUNNY_COUNT_SQRT = 5;
+	int BUNNY_COUNT_SQRT = 3;
 	int LOCAL_LIGHTS_COUNT_SQRT = 26;
 	uint32_t SHADOW_MAP_DIM = 1024;
+	int SCENE_RADIUS = 15;
 }
 
 class Imgui : public ImguiBase {
@@ -179,9 +180,9 @@ public:
 		float range = static_cast<float>(LOCAL_LIGHTS_COUNT_SQRT / 2);
 		for (float z = -range; z < range; ++z) {
 			for (float x = -range; x < range; ++x) {
-				float radius = static_cast<float>(rdFloat(RNGen) * 2.5f);
-				glm::vec3 lightPos = glm::vec3(x * 0.5f, 1.5f + (rdFloat(RNGen) - 0.5), z * 0.5f);
-				glm::vec3 lightColor = glm::vec3(rdFloat(RNGen), rdFloat(RNGen), rdFloat(RNGen));
+				float radius = static_cast<float>(rdFloat(RNGen) * 7.5f + 1.f);
+				glm::vec3 lightPos = glm::vec3(x * 0.5f, 5.5f + (rdFloat(RNGen) - 0.5), z * 0.5f);
+				glm::vec3 lightColor = glm::vec3(rdFloat(RNGen) * 5, rdFloat(RNGen) * 5, rdFloat(RNGen) * 5);
 
 				localLightInfo.push_back({
 					glm::translate(glm::mat4(1.f), lightPos) * glm::scale(glm::mat4(1.f), glm::vec3(radius)),
@@ -199,7 +200,7 @@ public:
 		for (float z = -range; z < range + 1; ++z) {
 			for (float x = -range; x < range + 1; ++x) {
 				objPushConstants.push_back({
-					glm::translate(glm::mat4(1.f), glm::vec3(x * 1.7f, 0.5f, z * 1.7f)), //model transform
+					glm::translate(glm::mat4(1.f), glm::vec3(x * 4.5f, 0.5f, z * 4.5f)) * glm::scale(glm::mat4(1.f), glm::vec3(3, 3, 3)), //model transform
 					glm::vec3(0.15f, 0.15f, 0.15f), //color
 					0.1f,
 					glm::vec3(0.02f, 0.02f, 0.02f), //water
@@ -209,7 +210,7 @@ public:
 		}
 		//floor
 		objPushConstants.push_back({
-			glm::scale(glm::mat4(1.f), glm::vec3(20.f, 1.f, 20.f)),
+			glm::scale(glm::mat4(1.f), glm::vec3(25, 1.f, 25)),
 			glm::vec3(0.5f, 0.5f, 0.5f), //grey
 			1.f,
 			glm::vec3(0.02f, 0.02f, 0.02f), //water
@@ -219,7 +220,7 @@ public:
 		/*
 		* global light
 		*/
-		glm::vec3 lightPos = glm::vec3(8, 16, 8);
+		glm::vec3 lightPos = glm::vec3(10, 20, 10);
 		lightView = glm::lookAt(lightPos, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
 		lightProj = glm::perspective(glm::radians(45.f), 1.f, 0.1f, 1000.f);
 		lightProj[1][1] *= -1;
@@ -283,6 +284,8 @@ private:
 		glm::vec4 lightPos;
 		glm::vec3 camPos;
 		int renderMode = 0;
+		float depthMin = 0;
+		float depthMax = 0;
 	}lightingPassPushConstant;
 
 	/*
@@ -346,6 +349,8 @@ private:
 	struct ShadowMapPushConstant {
 		glm::mat4 model;
 		glm::mat4 lightProjView;
+		float depthMin = 0;
+		float depthMax = 0;
 	}shadowMapPushConstant;
 
 	/*
@@ -823,7 +828,7 @@ private:
 		gen.addVertexInputAttributeDescription(bunny.getAttributeDescriptions());
 		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/shadow_map_vert.spv")), VK_SHADER_STAGE_VERTEX_BIT);
 		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/shadow_map_frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
-		gen.addPushConstantRange({ { VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowMapPushConstant) } });
+		gen.addPushConstantRange({ { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT , 0, sizeof(ShadowMapPushConstant) } });
 		gen.setDepthStencilInfo();
 		gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT);
 		gen.generate(shadowMapRenderPass, &shadowMapPipeline, &shadowMapPipelineLayout);
@@ -920,6 +925,16 @@ private:
 
 		Imgui* imgui = static_cast<Imgui*>(imguiBase);
 
+		//relative depth range update
+		float eyeDistance = glm::length(camera.camPos);
+		shadowMapPushConstant.depthMin = eyeDistance - SCENE_RADIUS;
+		/*if (shadowMapPushConstant.depthMin < 0)
+			shadowMapPushConstant.depthMin = 0;*/
+		shadowMapPushConstant.depthMax = eyeDistance + SCENE_RADIUS;
+
+		lightingPassPushConstant.depthMin = shadowMapPushConstant.depthMin;
+		lightingPassPushConstant.depthMax = shadowMapPushConstant.depthMax;
+
 		for (size_t i = 0; i < framebuffers.size(); ++i) {
 			VK_CHECK_RESULT(vkBeginCommandBuffer(commandBuffers[i], &cmdBufInfo));
 			
@@ -967,7 +982,7 @@ private:
 			for (int instance = 0; instance < BUNNY_COUNT_SQRT * BUNNY_COUNT_SQRT; ++instance) {
 				shadowMapPushConstant.model = objPushConstants[instance].model;
 				vkCmdPushConstants(commandBuffers[i], shadowMapPipelineLayout,
-					VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowMapPushConstant), &shadowMapPushConstant);
+					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ShadowMapPushConstant), &shadowMapPushConstant);
 				vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(bunny.indices.size()), 1, 0, 0, 0);
 			}
 			//floor
@@ -975,7 +990,7 @@ private:
 			vkCmdBindIndexBuffer(commandBuffers[i], floorBuffer, floor.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
 			shadowMapPushConstant.model = objPushConstants[BUNNY_COUNT_SQRT * BUNNY_COUNT_SQRT].model;
 			vkCmdPushConstants(commandBuffers[i], shadowMapPipelineLayout,
-				VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowMapPushConstant), &shadowMapPushConstant);
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ShadowMapPushConstant), &shadowMapPushConstant);
 			vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(floor.indices.size()), 1, 0, 0, 0);
 			vkCmdEndRenderPass(commandBuffers[i]);
 			vkdebug::marker::endLabel(commandBuffers[i]);
