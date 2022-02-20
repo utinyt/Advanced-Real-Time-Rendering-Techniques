@@ -34,7 +34,7 @@ void main(){
 
 	switch(renderMode){
 	case 1:
-		col = vec4(texture(shadowMap, inUV).xyz, 1.f); //shadow map
+		col = vec4(texture(shadowMap, inUV).xyz / 1000, 1.f); //shadow map
 		return;
 	case 2:
 		col = vec4(shadowIndex.xy, 0, 1.f);

@@ -6,5 +6,6 @@
 ..\..\glslc.exe local_lights.frag -o local_lights_frag.spv -g
 ..\..\glslc.exe shadow_map.vert -o shadow_map_vert.spv -g
 ..\..\glslc.exe shadow_map.frag -o shadow_map_frag.spv -g
-..\..\glslc.exe shadow_map_blur.comp -o shadow_map_blur_comp.spv -g
+..\..\glslc.exe shadow_map_horizontal_blur.comp -o shadow_map_horizontal_blur_comp.spv -g
+..\..\glslc.exe shadow_map_vertical_blur.comp -o shadow_map_vertical_blur_comp.spv -g
 pause

@@ -137,7 +137,8 @@ public:
 		vkDestroyPipelineLayout(devices.device, localLightPipelineLayout, nullptr);
 		vkDestroyPipeline(devices.device, shadowMapPipeline, nullptr);
 		vkDestroyPipelineLayout(devices.device, shadowMapPipelineLayout, nullptr);
-		vkDestroyPipeline(devices.device, computePipeline, nullptr);
+		vkDestroyPipeline(devices.device, computeHorizontalPipeline, nullptr);
+		vkDestroyPipeline(devices.device, computeVerticalPipeline, nullptr);
 		vkDestroyPipelineLayout(devices.device, computePipelineLayout, nullptr);
 
 		//renderpass
@@ -208,7 +209,7 @@ public:
 		}
 		//floor
 		objPushConstants.push_back({
-			glm::scale(glm::mat4(1.f), glm::vec3(200.f, 1.f, 200.f)),
+			glm::scale(glm::mat4(1.f), glm::vec3(20.f, 1.f, 20.f)),
 			glm::vec3(0.5f, 0.5f, 0.5f), //grey
 			1.f,
 			glm::vec3(0.02f, 0.02f, 0.02f), //water
@@ -218,7 +219,7 @@ public:
 		/*
 		* global light
 		*/
-		glm::vec3 lightPos = glm::vec3(10, 10, 10);
+		glm::vec3 lightPos = glm::vec3(8, 16, 8);
 		lightView = glm::lookAt(lightPos, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
 		lightProj = glm::perspective(glm::radians(45.f), 1.f, 0.1f, 1000.f);
 		lightProj[1][1] *= -1;
@@ -351,7 +352,8 @@ private:
 	* compute resources
 	*/
 	/** pipeline */
-	VkPipeline computePipeline = VK_NULL_HANDLE;
+	VkPipeline computeHorizontalPipeline = VK_NULL_HANDLE;
+	VkPipeline computeVerticalPipeline = VK_NULL_HANDLE;
 	VkPipelineLayout computePipelineLayout = VK_NULL_HANDLE;
 	/** render targets for blur */
 	std::vector<VkImage> shadowMapBlurImages{};
@@ -836,11 +838,15 @@ private:
 
 		VkComputePipelineCreateInfo computePipelineInfo{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
 		computePipelineInfo.layout = computePipelineLayout;
-		VkShaderModule blurComputeModule = vktools::createShaderModule(devices.device, vktools::readFile("shaders/shadow_map_blur_comp.spv"));
-		computePipelineInfo.stage = vktools::initializers::pipelineShaderStageCreateInfo(VK_SHADER_STAGE_COMPUTE_BIT, blurComputeModule);
-		VK_CHECK_RESULT(vkCreateComputePipelines(devices.device, VK_NULL_HANDLE, 1, &computePipelineInfo, nullptr, &computePipeline));
+		VkShaderModule blurHorizontalComputeModule = vktools::createShaderModule(devices.device, vktools::readFile("shaders/shadow_map_horizontal_blur_comp.spv"));
+		VkShaderModule blurVerticalComputeModule = vktools::createShaderModule(devices.device, vktools::readFile("shaders/shadow_map_vertical_blur_comp.spv"));
+		computePipelineInfo.stage = vktools::initializers::pipelineShaderStageCreateInfo(VK_SHADER_STAGE_COMPUTE_BIT, blurHorizontalComputeModule);
+		VK_CHECK_RESULT(vkCreateComputePipelines(devices.device, VK_NULL_HANDLE, 1, &computePipelineInfo, nullptr, &computeHorizontalPipeline));
+		computePipelineInfo.stage = vktools::initializers::pipelineShaderStageCreateInfo(VK_SHADER_STAGE_COMPUTE_BIT, blurVerticalComputeModule);
+		VK_CHECK_RESULT(vkCreateComputePipelines(devices.device, VK_NULL_HANDLE, 1, &computePipelineInfo, nullptr, &computeVerticalPipeline));
 
-		vkDestroyShaderModule(devices.device, blurComputeModule, nullptr);
+		vkDestroyShaderModule(devices.device, blurHorizontalComputeModule, nullptr);
+		vkDestroyShaderModule(devices.device, blurVerticalComputeModule, nullptr);
 		LOG("created:\tpipelines");
 	}
 
@@ -976,10 +982,9 @@ private:
 
 			if (separatedComputeQueue == false) {
 				vkdebug::marker::beginLabel(commandBuffers[i], "Horizontal Blur Shadow Map");
-				vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+				vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, computeHorizontalPipeline);
 				vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout,
 					0, 1, &computeDescHorizontalSets[currentFrame], 0, 0);
-				blurComputePushConstant.horizontalBlur = 1; //0 for vertical blur
 				blurComputePushConstant.kernelWidth = imgui->userInput.kernelWidth;
 				vkCmdPushConstants(commandBuffers[i], computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(BlurComputePushConstant), &blurComputePushConstant);
 				vkCmdDispatch(commandBuffers[i], SHADOW_MAP_DIM / 128, SHADOW_MAP_DIM, 1); //local_group_x = 128
@@ -1004,9 +1009,9 @@ private:
 				);
 
 				vkdebug::marker::beginLabel(commandBuffers[i], "Vertical Blur Shadow Map");
+				vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, computeVerticalPipeline);
 				vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout,
 					0, 1, &computeDescVerticalSets[currentFrame], 0, 0);
-				blurComputePushConstant.horizontalBlur = 0; //0 for vertical blur
 				vkCmdPushConstants(commandBuffers[i], computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(BlurComputePushConstant), &blurComputePushConstant);
 				vkCmdDispatch(commandBuffers[i], SHADOW_MAP_DIM / 128, SHADOW_MAP_DIM, 1); //local_group_x = 128
 				vkdebug::marker::endLabel(commandBuffers[i]);

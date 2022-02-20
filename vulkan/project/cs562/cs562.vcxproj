@@ -92,7 +92,8 @@
     <None Include="shaders\pbr.glsl" />
     <None Include="shaders\shadow_map.frag" />
     <None Include="shaders\shadow_map.vert" />
-    <None Include="shaders\shadow_map_blur.comp" />
+    <None Include="shaders\shadow_map_horizontal_blur.comp" />
+    <None Include="shaders\shadow_map_vertical_blur.comp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
