@@ -72,7 +72,11 @@ float getShadowValueG(vec4 s, float zf){
 }
 
 void main(){
-	float lightRadius = 100; //global (sphere) light radius
+	//debug view
+	if(renderMode == 1){
+		col = vec4(texture(shadowMap, inUV).xyz, 1.f); //shadow map
+		return;
+	}
 
 	vec4 pos = texture(gPos, inUV);
 	vec4 normal = texture(gNormal, inUV);
@@ -82,30 +86,20 @@ void main(){
 	vec4 shadowCoord = shadowMatrix * pos;
 	vec2 shadowIndex = shadowCoord.xy / shadowCoord.w;
 
-	switch(renderMode){
-	case 1:
-		col = vec4(texture(shadowMap, inUV).xyz, 1.f); //shadow map
-		if(col.x > 1)
-			col = vec4(1.f, 0, 0, 1);
-		else if(col.x < 0)
-			col = vec4(0, 1, 0, 1);
-		return;
-	case 2:
-		col = vec4(shadowIndex.xy, 0, 1.f);
-		return;
-	}
-
 	vec3 ambient = diffuseRoughness.xyz * 0.02;
 
+	//BRDF
 	vec3 L = lightPos.xyz - pos.xyz;
 	float dist = length(L);
 	L = normalize(L);
 	vec3 V = normalize(camPos - pos.xyz);
 
+	float lightRadius = 100; //global (sphere) light radius
 	vec3 Lo = BRDF(L, V, normal.xyz, specularMetallic.w,
 		diffuseRoughness.w, diffuseRoughness.xyz, specularMetallic.xyz,
 		1, vec3(5.f, 5.f, 5.f), lightRadius);
 
+	//Check shadow map range
 	if(shadowCoord.w > 0 && //discard fragments behind the light
 		shadowIndex.x >= 0 && shadowIndex.y >= 0 && //uv boundary [0 - 1] check
 		shadowIndex.x <= 1 && shadowIndex.y <= 1){

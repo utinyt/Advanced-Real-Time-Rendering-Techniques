@@ -30,16 +30,11 @@ public:
 		ImGui::NewFrame();
 		ImGui::Begin("Setting");
 		ImGui::NewLine();
-		ImGui::RadioButton("Final Output", &userInput.renderMode, 0);
+		ImGui::RadioButton("Final Output", &userInput.renderMode, 0); ImGui::SameLine();
+		ImGui::RadioButton("Shadow Map", &userInput.renderMode, 1); 
 		if (userInput.renderMode == 0) {
 			ImGui::Checkbox("Disable Local Lights", &userInput.disableLocalLight);
 		}
-		ImGui::NewLine();
-		ImGui::Text("Debug View");
-		ImGui::RadioButton("Shadow Map", &userInput.renderMode, 1); ImGui::SameLine();
-		ImGui::RadioButton("Shadow Index", &userInput.renderMode, 2); ImGui::SameLine();
-		ImGui::RadioButton("Pixel Depth", &userInput.renderMode, 3); ImGui::SameLine();
-		ImGui::RadioButton("Light Depth", &userInput.renderMode, 4);
 		
 		ImGui::NewLine();
 		ImGui::Text("Shadow Map Filter");
@@ -209,7 +204,7 @@ public:
 			for (float x = -range; x < range + 1; ++x) {
 				objPushConstants.push_back({
 					glm::translate(glm::mat4(1.f), glm::vec3(x * 4.5f, 0.5f, z * 4.5f)) * glm::scale(glm::mat4(1.f), glm::vec3(3, 3, 3)), //model transform
-					glm::vec3(0.5f, 0.5f, 0.5f), //color
+					glm::vec3(0.8f, 0.8f, 0.8f), //color
 					0.1f,
 					glm::vec3(0.02f, 0.02f, 0.02f), //water
 					0.1f
