@@ -43,7 +43,7 @@ public:
 		
 		ImGui::NewLine();
 		ImGui::Text("Shadow Map Filter");
-		static int currentKernelWidth = 0;
+		static int currentKernelWidth = 7;
 		ImGui::SliderInt("Kernel Width", &currentKernelWidth, 0, 50);
 		if (currentKernelWidth != userInput.kernelWidth) {
 			userInput.kernelWidth = currentKernelWidth;
@@ -940,7 +940,7 @@ private:
 		shadowMapPushConstant.depthMax = lightDistance + SCENE_RADIUS;
 		lightingPassPushConstant.depthMin = shadowMapPushConstant.depthMin;
 		lightingPassPushConstant.depthMax = shadowMapPushConstant.depthMax;
-		lightingPassPushConstant.alpha = (float)imgui->userInput.factor * pow(10, -imgui->userInput.power);
+		lightingPassPushConstant.alpha = (float)imgui->userInput.factor * static_cast<float>(pow(10, -imgui->userInput.power));
 
 		for (size_t i = 0; i < framebuffers.size(); ++i) {
 			VK_CHECK_RESULT(vkBeginCommandBuffer(commandBuffers[i], &cmdBufInfo));
