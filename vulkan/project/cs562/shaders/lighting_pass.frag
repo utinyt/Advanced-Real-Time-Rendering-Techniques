@@ -15,6 +15,7 @@ layout(push_constant) uniform CamPos{
 	int renderMode;
 	float depthMin;
 	float depthMax;
+	float alpha;
 };
 
 layout(location = 0) in vec2 inUV;
@@ -27,7 +28,6 @@ layout(location = 0) out vec4 col;
 * @return G - shadow value [0 ~ 1]
 */
 float getShadowValueG(vec4 s, float zf){
-	float alpha = 0.0003f;
 	vec4 s_ = (1 - alpha) *s + alpha * vec4(.5f);
 	float zf2 = zf*zf;
 
@@ -58,10 +58,17 @@ float getShadowValueG(vec4 s, float zf){
 	
 	if(zf <= z2)
 		return 0;
-	else if(zf <= z3)
-		return (zf * z3 - s_.x * (zf + z3) + s_.y) / ((z3 - z2) * (zf - z2));
-	else
-		return (1 - ((z2 * z3 - s_.x * (z2+z3) + s_.y) / ((zf - z2) * zf - z3)) );
+	else if(zf <= z3){
+		float numerator = zf * z3 - s_.x * (zf + z3) + s_.y;
+		float denominator = (z3 - z2) * (zf - z2);
+		return numerator / denominator;
+	}
+	else{
+		float numerator = z2 * z3 - s_.x * (z2+z3) + s_.y;
+		float denominator = (zf - z2) * (zf - z3);
+		return 1.f - (numerator / denominator);
+	}
+		
 }
 
 void main(){
@@ -77,7 +84,11 @@ void main(){
 
 	switch(renderMode){
 	case 1:
-		col = vec4(texture(shadowMap, inUV).xyz / 1000, 1.f); //shadow map
+		col = vec4(texture(shadowMap, inUV).xyz, 1.f); //shadow map
+		if(col.x > 1)
+			col = vec4(1.f, 0, 0, 1);
+		else if(col.x < 0)
+			col = vec4(0, 1, 0, 1);
 		return;
 	case 2:
 		col = vec4(shadowIndex.xy, 0, 1.f);
@@ -103,7 +114,6 @@ void main(){
 		float relativeFragmentDepth = (shadowCoord.w - depthMin) / (depthMax - depthMin);
 		float G = getShadowValueG(blurredShadowMap, relativeFragmentDepth );
 		col = vec4(Lo * (1.0 - G) + ambient, 1.f);
-		//col = vec4(vec3(1.0 - G), 1.f);
 		return;
 	}
 

@@ -19,8 +19,9 @@ namespace {
 	std::uniform_real_distribution<> rdFloat(0.0, 1.0);
 	int BUNNY_COUNT_SQRT = 3;
 	int LOCAL_LIGHTS_COUNT_SQRT = 26;
-	uint32_t SHADOW_MAP_DIM = 1024;
-	int SCENE_RADIUS = 15;
+	uint32_t SHADOW_MAP_DIM = 2048;
+	int SCENE_RADIUS = 25;
+	glm::vec3 LIGHT_POS = glm::vec3(30, 36, 30);
 }
 
 class Imgui : public ImguiBase {
@@ -49,6 +50,11 @@ public:
 			userInput.shouldUpdateKernel = true;
 		}
 
+		ImGui::NewLine();
+		ImGui::Text("Alpha = Factor * 10^(-Power)");
+		ImGui::SliderInt("Power", &userInput.power, 2, 7);
+		ImGui::SliderInt("Factor", &userInput.factor, 1, 9);
+
 		ImGui::End();
 		ImGui::Render();
 	}
@@ -59,6 +65,8 @@ public:
 		int kernelWidth = -1;
 		bool disableLocalLight = false;
 		bool shouldUpdateKernel = true;
+		int power = 5;
+		int factor = 1;
 	} userInput;
 };
 
@@ -160,8 +168,8 @@ public:
 	*/
 	virtual void initApp() override {
 		VulkanAppBase::initApp();
-		camera.camPos = glm::vec3(-4, 4, 10);
-		camera.camFront = glm::normalize(glm::vec3(4, -3, -10));
+		camera.camPos = glm::vec3(-8, 10, 20);
+		camera.camFront = glm::normalize(glm::vec3(8, -8, -20));
 		camera.camUp = glm::vec3(0.f, 1.f, 0.f);
 
 		separatedComputeQueue = devices.indices.computeFamily.value() != devices.indices.graphicsFamily.value();
@@ -201,7 +209,7 @@ public:
 			for (float x = -range; x < range + 1; ++x) {
 				objPushConstants.push_back({
 					glm::translate(glm::mat4(1.f), glm::vec3(x * 4.5f, 0.5f, z * 4.5f)) * glm::scale(glm::mat4(1.f), glm::vec3(3, 3, 3)), //model transform
-					glm::vec3(0.15f, 0.15f, 0.15f), //color
+					glm::vec3(0.5f, 0.5f, 0.5f), //color
 					0.1f,
 					glm::vec3(0.02f, 0.02f, 0.02f), //water
 					0.1f
@@ -210,7 +218,7 @@ public:
 		}
 		//floor
 		objPushConstants.push_back({
-			glm::scale(glm::mat4(1.f), glm::vec3(25, 1.f, 25)),
+			glm::scale(glm::mat4(1.f), glm::vec3(30, 1.f, 30)),
 			glm::vec3(0.5f, 0.5f, 0.5f), //grey
 			1.f,
 			glm::vec3(0.02f, 0.02f, 0.02f), //water
@@ -220,12 +228,12 @@ public:
 		/*
 		* global light
 		*/
-		glm::vec3 lightPos = glm::vec3(10, 20, 10);
-		lightView = glm::lookAt(lightPos, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+		lightView = glm::lookAt(LIGHT_POS, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
 		lightProj = glm::perspective(glm::radians(45.f), 1.f, 0.1f, 1000.f);
 		lightProj[1][1] *= -1;
 		shadowMapPushConstant.lightProjView = lightProj * lightView;
-		lightingPassPushConstant.lightPos = glm::vec4(lightPos, 1.f);
+		lightingPassPushConstant.lightPos = glm::vec4(LIGHT_POS, 1.f);
+		blurComputePushConstant.shadowDim = SHADOW_MAP_DIM;
 
 		//create shadow map render targets
 		createShadowMapFramebuffer();
@@ -286,6 +294,7 @@ private:
 		int renderMode = 0;
 		float depthMin = 0;
 		float depthMax = 0;
+		float alpha = 0.01f;
 	}lightingPassPushConstant;
 
 	/*
@@ -380,7 +389,7 @@ private:
 	bool separatedComputeQueue = false;
 	/** push constant */
 	struct BlurComputePushConstant {
-		int horizontalBlur = 1; //1 for true, 0 for false
+		int shadowDim = 1024;
 		int kernelWidth = 5;
 	} blurComputePushConstant;
 
@@ -830,7 +839,7 @@ private:
 		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/shadow_map_frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
 		gen.addPushConstantRange({ { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT , 0, sizeof(ShadowMapPushConstant) } });
 		gen.setDepthStencilInfo();
-		gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT);
+		//gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT);
 		gen.generate(shadowMapRenderPass, &shadowMapPipeline, &shadowMapPipelineLayout);
 
 		/*
@@ -926,14 +935,12 @@ private:
 		Imgui* imgui = static_cast<Imgui*>(imguiBase);
 
 		//relative depth range update
-		float eyeDistance = glm::length(camera.camPos);
-		shadowMapPushConstant.depthMin = eyeDistance - SCENE_RADIUS;
-		/*if (shadowMapPushConstant.depthMin < 0)
-			shadowMapPushConstant.depthMin = 0;*/
-		shadowMapPushConstant.depthMax = eyeDistance + SCENE_RADIUS;
-
+		float lightDistance = glm::length(LIGHT_POS);
+		shadowMapPushConstant.depthMin = lightDistance - SCENE_RADIUS;
+		shadowMapPushConstant.depthMax = lightDistance + SCENE_RADIUS;
 		lightingPassPushConstant.depthMin = shadowMapPushConstant.depthMin;
 		lightingPassPushConstant.depthMax = shadowMapPushConstant.depthMax;
+		lightingPassPushConstant.alpha = (float)imgui->userInput.factor * pow(10, -imgui->userInput.power);
 
 		for (size_t i = 0; i < framebuffers.size(); ++i) {
 			VK_CHECK_RESULT(vkBeginCommandBuffer(commandBuffers[i], &cmdBufInfo));

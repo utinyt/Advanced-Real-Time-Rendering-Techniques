@@ -9,42 +9,42 @@ layout(binding = 2) uniform BlurKernelBuffer {
 };
 
 layout(push_constant) uniform PS{
-	int horizontalBlur; // 1 for true, 0 for false
+	int shadowDim;
 	int kernelWidth;
 };
 
 shared vec4 col[128 + 100]; // 128 thread group + max kernel radius (50) * 2
 
 //no shared variables - not optimized
-vec4 blur(ivec2 gpos){
-	vec4 sum = vec4(0);
-	int xOffsetFactor = horizontalBlur;
-	int yOffsetFactor = xOffsetFactor == 1 ? 0 : 1;
-	int boundaryCheckIndex = xOffsetFactor == 1 ? 0 : 1;
-
-	for(int i = -kernelWidth; i <= kernelWidth; ++i){
-		ivec2 pos = gpos + i * ivec2(xOffsetFactor, yOffsetFactor);
-
-		//shadow map boundary check - clamp
-		if(pos[boundaryCheckIndex] < 0)
-			pos[boundaryCheckIndex] = 0;
-		else if(pos[boundaryCheckIndex] > 1023)
-			pos[boundaryCheckIndex] = 1023;
-
-		//weighted average
-		int vecIndex = (i + kernelWidth) / 4;
-		int elementIndex = (i + kernelWidth) % 4;
-		sum += kernel[vecIndex][elementIndex] * imageLoad(src, pos);
-	}
-	return sum;
-}
+//vec4 blur(ivec2 gpos){
+//	vec4 sum = vec4(0);
+//	int xOffsetFactor = horizontalBlur;
+//	int yOffsetFactor = xOffsetFactor == 1 ? 0 : 1;
+//	int boundaryCheckIndex = xOffsetFactor == 1 ? 0 : 1;
+//
+//	for(int i = -kernelWidth; i <= kernelWidth; ++i){
+//		ivec2 pos = gpos + i * ivec2(xOffsetFactor, yOffsetFactor);
+//
+//		//shadow map boundary check - clamp
+//		if(pos[boundaryCheckIndex] < 0)
+//			pos[boundaryCheckIndex] = 0;
+//		else if(pos[boundaryCheckIndex] > 1023)
+//			pos[boundaryCheckIndex] = 1023;
+//
+//		//weighted average
+//		int vecIndex = (i + kernelWidth) / 4;
+//		int elementIndex = (i + kernelWidth) % 4;
+//		sum += kernel[vecIndex][elementIndex] * imageLoad(src, pos);
+//	}
+//	return sum;
+//}
 
 //shadow map boundary index clamp
 int boundaryCheck(int i){
 	if(i < 0)
 		i = 0;
-	else if(i > 1023)
-		i = 1023;
+	else if(i > shadowDim - 1)
+		i = shadowDim - 1;
 	return i;
 }
 
