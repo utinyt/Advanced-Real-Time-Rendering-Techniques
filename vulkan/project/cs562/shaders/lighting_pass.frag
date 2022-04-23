@@ -184,9 +184,9 @@ void main(){
 	}
 	spec /= N;
 
-	//	vec4 shadowCoord = shadowMatrix * pos;
-	//	vec2 shadowIndex = shadowCoord.xy / shadowCoord.w;
-	//Check shadow map range
+//	vec4 shadowCoord = shadowMatrix * pos;
+//	vec2 shadowIndex = shadowCoord.xy / shadowCoord.w;
+//	//Check shadow map range
 //	if(shadowCoord.w > 0 && //discard fragments behind the light
 //		shadowIndex.x >= 0 && shadowIndex.y >= 0 && //uv boundary [0 - 1] check
 //		shadowIndex.x <= 1 && shadowIndex.y <= 1){
@@ -194,7 +194,7 @@ void main(){
 //		vec4 blurredShadowMap = texture(shadowMap, shadowIndex);
 //		float relativeFragmentDepth = (shadowCoord.w - depthMin) / (depthMax - depthMin);
 //		float G = getShadowValueG(blurredShadowMap, relativeFragmentDepth );
-//		col = vec4(Lo * (1.0 - G), 1.f);
+//		col = vec4(diffuse + spec * (1.0 - G), 1.f);
 //		return;
 //	}
 

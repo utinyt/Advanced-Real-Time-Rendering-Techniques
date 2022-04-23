@@ -65,5 +65,8 @@
     <None Include="shaders\skydome.frag">
       <Filter>Source Files\shaders</Filter>
     </None>
+    <None Include="shaders\ao.frag">
+      <Filter>Source Files\shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>
