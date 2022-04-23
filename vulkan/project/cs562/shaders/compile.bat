@@ -12,4 +12,6 @@
 ..\..\glslc.exe shadow_map.frag -o shadow_map_frag.spv -g
 ..\..\glslc.exe shadow_map_horizontal_blur.comp -o shadow_map_horizontal_blur_comp.spv -g
 ..\..\glslc.exe shadow_map_vertical_blur.comp -o shadow_map_vertical_blur_comp.spv -g
+..\..\glslc.exe ao_horizontal_blur.comp -o ao_horizontal_blur_comp.spv -g
+..\..\glslc.exe ao_vertical_blur.comp -o ao_vertical_blur_comp.spv -g
 pause

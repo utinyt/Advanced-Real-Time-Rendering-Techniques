@@ -7,7 +7,8 @@ layout(binding = 3) uniform sampler2D gSpecular;
 layout(binding = 4) uniform sampler2D shadowMap;
 layout(binding = 5) uniform sampler2D irradianceMap;
 layout(binding = 6) uniform sampler2D skydomeTexture;
-layout(binding = 7) uniform Hammersely{
+layout(binding = 7) uniform sampler2D aoBlurred;
+layout(binding = 8) uniform Hammersely{
 	vec4 hammersely[20];
 	uint N;
 };
@@ -133,8 +134,8 @@ float G(vec3 L, vec3 V, vec3 H, vec3 normal, float roughness){
 
 void main(){
 	//debug view
-	if(renderMode == 1){
-		col = vec4(texture(shadowMap, inUV).xyz, 1.f); //shadow map
+	if(renderMode >= 1){
+		col = vec4(texture(aoBlurred, inUV).xxx, 1.f); //shadow map
 		return;
 	}
 
@@ -160,6 +161,7 @@ void main(){
 	//diffuse term
 	vec3 kd = vec3(1.f) - specularMetallic.xyz;
 	kd *= 1 - specularMetallic.w;
+	float ao = texture(aoBlurred, inUV).x;
 	const vec3 diffuse = kd * diffuseRoughness.xyz / PI * textureLod(irradianceMap, sphereMap(normalize(normal.xyz)), 0).xyz;
 
 	//specular
@@ -184,9 +186,9 @@ void main(){
 	}
 	spec /= N;
 
-//	vec4 shadowCoord = shadowMatrix * pos;
-//	vec2 shadowIndex = shadowCoord.xy / shadowCoord.w;
-//	//Check shadow map range
+	vec4 shadowCoord = shadowMatrix * pos;
+	vec2 shadowIndex = shadowCoord.xy / shadowCoord.w;
+	//Check shadow map range
 //	if(shadowCoord.w > 0 && //discard fragments behind the light
 //		shadowIndex.x >= 0 && shadowIndex.y >= 0 && //uv boundary [0 - 1] check
 //		shadowIndex.x <= 1 && shadowIndex.y <= 1){
@@ -195,9 +197,10 @@ void main(){
 //		float relativeFragmentDepth = (shadowCoord.w - depthMin) / (depthMax - depthMin);
 //		float G = getShadowValueG(blurredShadowMap, relativeFragmentDepth );
 //		col = vec4(diffuse + spec * (1.0 - G), 1.f);
+//		col.xyz *= ao;
 //		return;
 //	}
 
-	col = vec4(diffuse + spec, 1.f);
+	col = vec4(diffuse * ao + spec, 1.f);
 	//col = vec4(texture(irradianceMap, inUV).xyz, 1.f);
 }

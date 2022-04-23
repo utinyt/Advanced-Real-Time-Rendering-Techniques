@@ -68,5 +68,11 @@
     <None Include="shaders\ao.frag">
       <Filter>Source Files\shaders</Filter>
     </None>
+    <None Include="shaders\ao_horizontal_blur.comp">
+      <Filter>Source Files\shaders</Filter>
+    </None>
+    <None Include="shaders\ao_vertical_blur.comp">
+      <Filter>Source Files\shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

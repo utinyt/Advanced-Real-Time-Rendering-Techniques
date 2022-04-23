@@ -9,8 +9,8 @@ layout(push_constant) uniform exposure{
 };
 
 void main(){
-	vec3 hdr = texture(hdrImage, inUV).xxx;
-//	hdr = e * hdr / (e * hdr + vec3(1, 1, 1));
-//	hdr = pow(hdr, vec3(1/2.2));
+	vec3 hdr = texture(hdrImage, inUV).xyz;
+	hdr = e * hdr / (e * hdr + vec3(1, 1, 1));
+	hdr = pow(hdr, vec3(1/2.2));
 	col = vec4(hdr, 1.f);
 }

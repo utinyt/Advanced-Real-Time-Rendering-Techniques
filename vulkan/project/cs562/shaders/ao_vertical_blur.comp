@@ -1,0 +1,105 @@
+#version 460 core
+
+layout(local_size_x = 1, local_size_y = 128, local_size_z = 1) in;
+
+layout(binding = 0, r32f) uniform readonly image2D src;
+layout(binding = 1, r32f) uniform writeonly image2D dst;
+layout(binding = 2, rgba32f) uniform readonly image2D gPos;
+layout(binding = 3, rgba32f) uniform readonly image2D gNormal;
+layout(binding = 4) uniform BlurKernelBuffer {
+	vec4 kernel[26]; //for alignment: 26 vec4 -> 104 floats
+};
+
+layout(push_constant) uniform PS{
+	ivec4 whk;
+	vec4 camPos;
+	int horizontalOnly;
+};
+
+struct Info{
+	vec4 posAO; // w = ao
+	vec4 normal;
+};
+
+shared Info info[128 + 100]; // 128 thread group + max kernel radius (50) * 2
+
+//shadow map boundary index clamp
+int boundaryCheck(int i){
+	if(i < 0)
+		i = 0;
+	else if(i > whk.y - 1)
+		i = whk.y - 1;
+	return i;
+}
+
+//no shared variables - not optimized
+vec4 blur(ivec2 gpos){
+	vec4 sum = vec4(0);
+	int kernelWidth = whk.z;
+
+	for(int i = -kernelWidth; i <= kernelWidth; ++i){
+		ivec2 pos = gpos + ivec2(0, i);
+
+		//shadow map boundary check - clamp
+		pos.y = boundaryCheck(pos.y);
+
+		//weighted average
+		int vecIndex = (i + kernelWidth) / 4;
+		int elementIndex = (i + kernelWidth) % 4;
+		sum += kernel[vecIndex][elementIndex] * imageLoad(src, pos);
+	}
+	return sum;
+}
+
+void main(){
+	const ivec2 gpos = ivec2(gl_GlobalInvocationID.xy);
+	const uint sharedMemoryIndex = gl_LocalInvocationID.y;
+	int kernelWidth = whk.z;
+
+	if(horizontalOnly == 1){
+		imageStore(dst, gpos, vec4(imageLoad(src, gpos).x, 0, 0, 0));
+		return;
+	}
+
+	//image load to shared variables
+	ivec2 pos = gpos + ivec2(0, -kernelWidth);
+	pos.y = boundaryCheck(pos.y);
+	info[sharedMemoryIndex].posAO.w = imageLoad(src, pos).x;
+	info[sharedMemoryIndex].posAO.xyz = imageLoad(gPos, pos).xyz;
+	info[sharedMemoryIndex].normal = imageLoad(gNormal, pos);
+
+	//load more samples
+	if(sharedMemoryIndex < 2 * kernelWidth){
+		pos = gpos + ivec2(0, 128 - kernelWidth);
+		pos.y = boundaryCheck(pos.y);
+		info[sharedMemoryIndex + 128].posAO.w = imageLoad(src, pos).x;
+		info[sharedMemoryIndex + 128].posAO.xyz = imageLoad(gPos, pos).xyz;
+		info[sharedMemoryIndex + 128].normal = imageLoad(gNormal, pos);
+	}
+
+	//sync
+	barrier();
+
+	vec3 currPos = info[sharedMemoryIndex + kernelWidth].posAO.xyz;
+	vec3 currNormal = info[sharedMemoryIndex + kernelWidth].normal.xyz;
+	float currDist = distance(currPos, camPos.xyz);
+
+	//calculate weighted average
+	float sum = 0;
+	float weightSum = 0;
+	for(int i = 0; i <= 2 * kernelWidth; ++i){
+		int vecIndex = i / 4;
+		int elementIndex = i % 4;
+		float S = kernel[vecIndex][elementIndex];
+		float dist = distance(info[sharedMemoryIndex + i].posAO.xyz, camPos.xyz);
+		float R = max(dot(info[sharedMemoryIndex + i].normal.xyz, currNormal), 0) / 
+			sqrt(2 * 3.141592 * 0.01) * exp(-(dist - currDist) * (dist - currDist) / (2 * 0.01));
+
+		float weight = R*S;
+		sum += weight * info[sharedMemoryIndex + i].posAO.w;
+		weightSum += weight;
+	}
+	sum /= weightSum;
+
+	imageStore(dst, gpos, vec4(sum, 0, 0, 0));
+}

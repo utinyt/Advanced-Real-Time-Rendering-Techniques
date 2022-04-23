@@ -84,6 +84,8 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="shaders\ao.frag" />
+    <None Include="shaders\ao_horizontal_blur.comp" />
+    <None Include="shaders\ao_vertical_blur.comp" />
     <None Include="shaders\full_quad.vert" />
     <None Include="shaders\geometry.frag" />
     <None Include="shaders\geometry.vert" />
