@@ -56,5 +56,14 @@
     <None Include="shaders\shadow_map_vertical_blur.comp">
       <Filter>Source Files\shaders</Filter>
     </None>
+    <None Include="shaders\postprocess.frag">
+      <Filter>Source Files\shaders</Filter>
+    </None>
+    <None Include="shaders\skydome.vert">
+      <Filter>Source Files\shaders</Filter>
+    </None>
+    <None Include="shaders\skydome.frag">
+      <Filter>Source Files\shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

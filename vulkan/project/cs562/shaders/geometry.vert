@@ -21,5 +21,5 @@ layout(location = 1) out vec3 outNormal;
 void main(){
 	outPos = model * vec4(inPos, 1.f);
 	gl_Position = proj * view * outPos;
-	outNormal = mat3(transpose(inverse(model))) * inNormal;
+	outNormal = inNormal;
 }

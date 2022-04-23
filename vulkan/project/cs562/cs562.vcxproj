@@ -90,10 +90,13 @@
     <None Include="shaders\local_lights.frag" />
     <None Include="shaders\local_lights.vert" />
     <None Include="shaders\pbr.glsl" />
+    <None Include="shaders\postprocess.frag" />
     <None Include="shaders\shadow_map.frag" />
     <None Include="shaders\shadow_map.vert" />
     <None Include="shaders\shadow_map_horizontal_blur.comp" />
     <None Include="shaders\shadow_map_vertical_blur.comp" />
+    <None Include="shaders\skydome.frag" />
+    <None Include="shaders\skydome.vert" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

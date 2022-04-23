@@ -35,20 +35,21 @@ public:
 		if (userInput.renderMode == 0) {
 			ImGui::Checkbox("Disable Local Lights", &userInput.disableLocalLight);
 		}
-		
-		ImGui::NewLine();
+		ImGui::SliderFloat("HDR Exposure", &userInput.exposure, 0.1f, 20);
+		ImGui::SliderInt("# of Random Points - Specular", &userInput.randomPointNum, 1, 40);
+		/*ImGui::NewLine();
 		ImGui::Text("Shadow Map Filter");
 		static int currentKernelWidth = 7;
 		ImGui::SliderInt("Kernel Width", &currentKernelWidth, 0, 50);
 		if (currentKernelWidth != userInput.kernelWidth) {
 			userInput.kernelWidth = currentKernelWidth;
 			userInput.shouldUpdateKernel = true;
-		}
+		}*/
 
-		ImGui::NewLine();
+		/*ImGui::NewLine();
 		ImGui::Text("Alpha = Factor * 10^(-Power)");
 		ImGui::SliderInt("Power", &userInput.power, 2, 7);
-		ImGui::SliderInt("Factor", &userInput.factor, 1, 9);
+		ImGui::SliderInt("Factor", &userInput.factor, 1, 9);*/
 
 		ImGui::End();
 		ImGui::Render();
@@ -58,10 +59,12 @@ public:
 	struct UserInput {
 		int renderMode = 0;
 		int kernelWidth = -1;
-		bool disableLocalLight = false;
+		bool disableLocalLight = true;
 		bool shouldUpdateKernel = true;
 		int power = 5;
 		int factor = 1;
+		float exposure = 3.f;
+		int randomPointNum = 20;
 	} userInput;
 };
 
@@ -75,7 +78,6 @@ public:
 		imguiBase = new Imgui;
 		MAX_FRAMES_IN_FLIGHT = 2;
 		buildCommandBufferEveryFrame = true;
-		
 	}
 
 	/*
@@ -91,6 +93,9 @@ public:
 		
 		//render targets
 		for (auto& framebuffer : geometryFramebuffers) {
+			framebuffer.cleanup();
+		}
+		for (auto& framebuffer : hdrFramebuffers) {
 			framebuffer.cleanup();
 		}
 		for (auto& framebuffer : shadowMaps) {
@@ -121,6 +126,8 @@ public:
 		vkDestroyDescriptorSetLayout(devices.device, computeDescHorizontalSetLayout, nullptr);
 		vkDestroyDescriptorPool(devices.device, computeDescVerticalPool, nullptr);
 		vkDestroyDescriptorSetLayout(devices.device, computeDescVerticalSetLayout, nullptr);
+		vkDestroyDescriptorPool(devices.device, postDescPool, nullptr);
+		vkDestroyDescriptorSetLayout(devices.device, postDescSetLayout, nullptr);
 
 		//uniform buffers
 		for (size_t i = 0; i < uniformBuffers.size(); ++i) {
@@ -131,6 +138,9 @@ public:
 				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 			vkDestroyBuffer(devices.device, blurKernelBuffers[i], nullptr);
 		}
+		devices.memoryAllocator.freeBufferMemory(hammersleyUniformBuffer,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		vkDestroyBuffer(devices.device, hammersleyUniformBuffer, nullptr);
 
 		//pipelines
 		vkDestroyPipeline(devices.device, geometryPassPipeline, nullptr);
@@ -144,13 +154,22 @@ public:
 		vkDestroyPipeline(devices.device, computeHorizontalPipeline, nullptr);
 		vkDestroyPipeline(devices.device, computeVerticalPipeline, nullptr);
 		vkDestroyPipelineLayout(devices.device, computePipelineLayout, nullptr);
+		vkDestroyPipeline(devices.device, skydomePipeline, nullptr);
+		vkDestroyPipelineLayout(devices.device, skydomePipelineLayout, nullptr);
+		vkDestroyPipeline(devices.device, postPipeline, nullptr);
+		vkDestroyPipelineLayout(devices.device, postPipelineLayout, nullptr);
 
 		//renderpass
 		vkDestroyRenderPass(devices.device, renderPass, nullptr);
+		vkDestroyRenderPass(devices.device, hdrRenderPass, nullptr);
 		vkDestroyRenderPass(devices.device, geometryRenderPass, nullptr);
 		vkDestroyRenderPass(devices.device, shadowMapRenderPass, nullptr);
 		//sampler
 		vkDestroySampler(devices.device, sampler, nullptr);
+
+		//textures
+		skydomeTexture.cleanup();
+		irradianceMap.cleanup();
 
 		//swapchain framebuffers
 		for (auto& framebuffer : framebuffers) {
@@ -171,10 +190,11 @@ public:
 
 		//models
 		bunny.load("../../meshes/bunny.obj");
-		bunnyBuffer = bunny.createModelBuffer(&devices);
+		createSphereModel();
+		bunnyBuffer = sphere.createModelBuffer(&devices);
 		floor.load("../../meshes/cube.obj");
 		floorBuffer = floor.createModelBuffer(&devices);
-		createSphereModel();
+		
 		sphereBuffer = sphere.createModelBuffer(&devices);
 		
 		/*
@@ -200,25 +220,41 @@ public:
 		* model transforms
 		*/
 		range = static_cast<float>(BUNNY_COUNT_SQRT / 2);
-		for (float z = -range; z < range + 1; ++z) {
-			for (float x = -range; x < range + 1; ++x) {
-				objPushConstants.push_back({
-					glm::translate(glm::mat4(1.f), glm::vec3(x * 4.5f, 0.5f, z * 4.5f)) * glm::scale(glm::mat4(1.f), glm::vec3(3, 3, 3)), //model transform
-					glm::vec3(0.8f, 0.8f, 0.8f), //color
-					0.1f,
-					glm::vec3(0.02f, 0.02f, 0.02f), //water
-					0.1f
-				});
-			}
+		//for (float z = -range; z < range + 1; ++z) {
+		//	for (float x = -range; x < range + 1; ++x) {
+		//		objPushConstants.push_back({
+		//			glm::translate(glm::mat4(1.f), glm::vec3(x * 4.5f, 0.5f, z * 4.5f)) * glm::scale(glm::mat4(1.f), glm::vec3(2, 2, 2)), //model transform
+		//			glm::vec3(1.0f, 1.0f, 1.0f), //color
+		//			1000.f,
+		//			glm::vec3(0.02f, 0.02f, 0.02f), //water
+		//			1.0f
+		//		});
+		//	}
+		//}
+
+		int objNum = BUNNY_COUNT_SQRT * BUNNY_COUNT_SQRT;
+		float PI_2 = 3.141592 * 2;
+		float radius = 7;
+		for (int i = 0; i < objNum; ++i) {
+			float frac = (float)i / objNum;
+			glm::vec3 pos = glm::vec3(radius * std::cos(PI_2 * frac), 0, radius * std::sin(PI_2 * frac));
+			objPushConstants.push_back({
+				glm::translate(glm::mat4(1.f), pos) * glm::scale(glm::mat4(1.f), glm::vec3(2, 2, 2)), //model transform
+				glm::vec3(1.0f, 1.0f, 1.0f), //color
+				50 * frac + 1.f,
+				glm::vec3(0.17, 0.17f, 0.17f),
+				1 * frac
+			});
 		}
+
 		//floor
-		objPushConstants.push_back({
-			glm::scale(glm::mat4(1.f), glm::vec3(30, 1.f, 30)),
-			glm::vec3(0.5f, 0.5f, 0.5f), //grey
-			1.f,
-			glm::vec3(0.02f, 0.02f, 0.02f), //water
-			1.f
-		});
+		//objPushConstants.push_back({
+		//	glm::scale(glm::mat4(1.f), glm::vec3(30, 1.f, 30)),
+		//	glm::vec3(0.5f, 0.5f, 0.5f), //grey
+		//	1.f,
+		//	glm::vec3(0.02f, 0.02f, 0.02f), //water
+		//	1.f
+		//});
 
 		/*
 		* global light
@@ -230,6 +266,12 @@ public:
 		lightingPassPushConstant.lightPos = glm::vec4(LIGHT_POS, 1.f);
 		blurComputePushConstant.shadowDim = SHADOW_MAP_DIM;
 
+		/*
+		* hdr maps
+		*/
+		skydomeTexture.loadHDR(&devices, "../../textures/Newport_Loft_Ref.hdr", VK_SAMPLER_ADDRESS_MODE_REPEAT);
+		irradianceMap.loadHDR(&devices, "../../textures/Newport_Loft_Ref.irr.hdr", VK_SAMPLER_ADDRESS_MODE_REPEAT);
+
 		//create shadow map render targets
 		createShadowMapFramebuffer();
 		createShadowMapBlurImages();
@@ -237,6 +279,9 @@ public:
 		//geometry pass render targets
 		createGeometryPassFramebuffer();
 		
+		//hdr render target
+		createHDRFramebuffer();
+
 		//sampler
 		VkSamplerCreateInfo samplerInfo = vktools::initializers::samplerCreateInfo(devices.availableFeatures, devices.properties);
 		VK_CHECK_RESULT(vkCreateSampler(devices.device, &samplerInfo, nullptr, &sampler));
@@ -257,6 +302,8 @@ public:
 
 		//command buffers
 		imguiBase->init(&devices, swapchain.extent.width, swapchain.extent.height, renderPass, MAX_FRAMES_IN_FLIGHT, sampleCount);
+		Imgui* imgui = static_cast<Imgui*>(imguiBase);
+		fillHammersleyList(40);
 	}
 
 private:
@@ -291,6 +338,10 @@ private:
 		float depthMax = 0;
 		float alpha = 0.01f;
 	}lightingPassPushConstant;
+	/** floating point framebuffers */
+	std::vector<Framebuffer> hdrFramebuffers;
+	/** render pass */
+	VkRenderPass hdrRenderPass = VK_NULL_HANDLE;
 
 	/*
 	* geometry pass resources
@@ -389,6 +440,35 @@ private:
 	} blurComputePushConstant;
 
 	/*
+	* environment map texture
+	*/
+	Texture2D skydomeTexture;
+	Texture2D irradianceMap;
+	/** skydome pipeline */
+	VkPipeline skydomePipeline = VK_NULL_HANDLE;
+	VkPipelineLayout skydomePipelineLayout = VK_NULL_HANDLE;
+	/** low discrepancy list */
+	VkBuffer hammersleyUniformBuffer = VK_NULL_HANDLE;
+	MemoryAllocator::HostVisibleMemory hammersleyUniformBufferMemory;
+	struct Hammersley {
+		glm::vec4 hammersley[20];
+		int N = 1;
+	} hammerselyBlock;
+	
+
+	/*
+	* postprocessing pass 
+	*/
+	/** pipeline */
+	VkPipeline postPipeline = VK_NULL_HANDLE;
+	VkPipelineLayout postPipelineLayout = VK_NULL_HANDLE;
+	/** descriptor set */
+	DescriptorSetBindings postDescSetBindings;
+	VkDescriptorPool postDescPool = VK_NULL_HANDLE;
+	VkDescriptorSetLayout postDescSetLayout = VK_NULL_HANDLE;
+	std::vector<VkDescriptorSet> postDescSets{};
+
+	/*
 	* called every frame - submit queues
 	*/
 	virtual void draw() override {
@@ -417,6 +497,14 @@ private:
 		VulkanAppBase::update();
 		updateBlurKernel();
 		updateUniformBuffer(currentFrame);
+
+		static int currentRamdomPoint = 1;
+		Imgui* imgui = static_cast<Imgui*>(imguiBase);
+		if (currentRamdomPoint != imgui->userInput.randomPointNum) {
+			currentRamdomPoint = imgui->userInput.randomPointNum;
+			updateHammersleyList(currentRamdomPoint);
+		}
+
 		buildCommandBuffer();
 	}
 
@@ -426,6 +514,7 @@ private:
 	void resizeWindow(bool /*recordCommandBuffer*/) override {
 		VulkanAppBase::resizeWindow(false);
 		createGeometryPassFramebuffer(false);
+		createHDRFramebuffer(false);
 		createShadowMapFramebuffer(false);
 		updateDescriptorSets();
 	}
@@ -654,13 +743,109 @@ private:
 	}
 
 	/*
+	* create floating point framebuffer
+	*/
+	void createHDRFramebuffer(bool createRenderPass = true) {
+		/*
+		* cleanup
+		*/
+		for (auto& framebuffer : hdrFramebuffers) {
+			framebuffer.cleanup();
+		}
+		hdrFramebuffers.resize(MAX_FRAMES_IN_FLIGHT);
+
+		/*
+		* add attachments
+		*/
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+			hdrFramebuffers[i].init(&devices);
+
+			VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+			VkImageCreateInfo imageInfo = vktools::initializers::imageCreateInfo(
+				{ swapchain.extent.width, swapchain.extent.height, 1 },
+				VK_FORMAT_R32G32B32A32_SFLOAT,
+				VK_IMAGE_TILING_OPTIMAL,
+				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				1
+			);
+
+			hdrFramebuffers[i].addAttachment(imageInfo, properties); //position
+		}
+
+		/*
+		* renderpass
+		*/
+		if (createRenderPass) {
+			std::vector<VkSubpassDependency> dependencies{};
+			dependencies.resize(2);
+
+			dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+			dependencies[0].dstSubpass = 0;
+			dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			dependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			dependencies[0].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			dependencies[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+			dependencies[1].srcSubpass = 0;
+			dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+			dependencies[1].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			dependencies[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			dependencies[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+			hdrRenderPass = hdrFramebuffers[0].createRenderPass(dependencies);
+		}
+
+		/*
+		* framebuffer
+		*/
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+			hdrFramebuffers[i].createFramebuffer(swapchain.extent, hdrRenderPass);
+		}
+	}
+
+	/*
+	* fill low discrepancy uniform buffer
+	*/
+	void fillHammersleyList(const int N) {
+		hammerselyBlock.N = N;
+		float vecIndex = 0;
+		int pos = 0;
+		for (int k = 0; k < N; ++k) {
+			int kk = k;
+			float u = 0.f;
+			for (float p = 0.5f; kk; p *= 0.5f, kk >>= 1) {
+				if (kk & 1) {
+					u += p;
+				}
+			}
+			float v = (k + 0.5f) / N;
+			hammerselyBlock.hammersley[(int)vecIndex][(pos++) % 4] = u;
+			hammerselyBlock.hammersley[(int)vecIndex][(pos++) % 4] = v;
+			vecIndex += 0.5f;
+		}
+		hammersleyUniformBufferMemory.mapData(devices.device, &hammerselyBlock);
+	}
+
+	/*
+	* update hammerselt list (only update N)
+	*/
+	void updateHammersleyList(const int N) {
+		hammerselyBlock.N = N;
+		hammersleyUniformBufferMemory.mapData(devices.device, &hammerselyBlock);
+	}
+
+	/*
 	* create procedural generated sphere
 	*/
 	void createSphereModel() {
-		const unsigned int division = 32;
+		const unsigned int division = 64;
 		const float PI = 3.141592f;
 		size_t vertexCount = (division + 1) * (division + 1);
 		std::vector<glm::vec3> positions;
+		std::vector<glm::vec3> normals;
 
 		//vertex data
 		for (unsigned int y = 0; y <= division; ++y) {
@@ -673,6 +858,7 @@ private:
 
 				glm::vec3 pos = glm::vec3(xPos, yPos, zPos);
 				positions.push_back(pos);
+				normals.push_back(pos);
 			}
 		}
 
@@ -699,7 +885,7 @@ private:
 			}
 		}
 
-		sphere.load(positions, {}, {}, indices, static_cast<uint32_t>(vertexCount), false, false);
+		sphere.load(positions, normals, {}, indices, static_cast<uint32_t>(vertexCount), true, false);
 	}
 
 	/*
@@ -778,11 +964,26 @@ private:
 		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/geometry_frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
 		gen.addPushConstantRange({ VkPushConstantRange{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ObjPushConstant)} });
 		gen.addDescriptorSetLayout({ descLayout });
-		gen.addVertexInputBindingDescription({ bunny.getBindingDescription() });
-		gen.addVertexInputAttributeDescription(bunny.getAttributeDescriptions());
+		gen.addVertexInputBindingDescription({ sphere.getBindingDescription() });
+		gen.addVertexInputAttributeDescription(sphere.getAttributeDescriptions());
 		//gen.setDepthStencilInfo();
+		gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT);
 		gen.setColorBlendInfo(VK_FALSE, static_cast<uint32_t>(geometryFramebuffers[0].attachments.size() - 1));
 		gen.generate(geometryRenderPass, &geometryPassPipeline, &geometryPassPipelineLayout);
+		gen.resetAll();
+
+		/*
+		* skydome pass
+		*/
+		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/skydome_vert.spv")), VK_SHADER_STAGE_VERTEX_BIT);
+		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/skydome_frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
+		gen.addDescriptorSetLayout({ descLayout });
+		gen.addVertexInputBindingDescription({ sphere.getBindingDescription() });
+		gen.addVertexInputAttributeDescription(sphere.getAttributeDescriptions());
+		gen.setDepthStencilInfo(VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL);
+		//gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT);
+		gen.setColorBlendInfo(VK_FALSE, static_cast<uint32_t>(geometryFramebuffers[0].attachments.size() - 1));
+		gen.generate(geometryRenderPass, &skydomePipeline, &skydomePipelineLayout);
 		gen.resetAll();
 
 		/*
@@ -795,7 +996,7 @@ private:
 		gen.setDepthStencilInfo(VK_FALSE, VK_FALSE);
 		gen.setColorBlendInfo(VK_FALSE);
 		gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE);
-		gen.generate(renderPass, &lightingPassPipeline, &lightingPassPipelineLayout);
+		gen.generate(hdrRenderPass, &lightingPassPipeline, &lightingPassPipelineLayout);
 		gen.resetAll();
 
 		/*
@@ -822,20 +1023,34 @@ private:
 		gen.setColorBlendAttachmentState(blendState);
 
 		//gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE);
-		gen.generate(renderPass, &localLightPipeline, &localLightPipelineLayout);
+		gen.generate(hdrRenderPass, &localLightPipeline, &localLightPipelineLayout);
 		gen.resetAll();
 
 		/*
 		* shadow map pass
 		*/
-		gen.addVertexInputBindingDescription({ bunny.getBindingDescription() });
-		gen.addVertexInputAttributeDescription(bunny.getAttributeDescriptions());
+		gen.addVertexInputBindingDescription({ sphere.getBindingDescription() });
+		gen.addVertexInputAttributeDescription(sphere.getAttributeDescriptions());
 		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/shadow_map_vert.spv")), VK_SHADER_STAGE_VERTEX_BIT);
 		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/shadow_map_frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
 		gen.addPushConstantRange({ { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT , 0, sizeof(ShadowMapPushConstant) } });
 		gen.setDepthStencilInfo();
 		//gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT);
 		gen.generate(shadowMapRenderPass, &shadowMapPipeline, &shadowMapPipelineLayout);
+		gen.resetAll();
+
+		/*
+		* post processing pass
+		*/
+		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/full_quad_vert.spv")), VK_SHADER_STAGE_VERTEX_BIT);
+		gen.addShader(vktools::createShaderModule(devices.device, vktools::readFile("shaders/postprocess_frag.spv")), VK_SHADER_STAGE_FRAGMENT_BIT);
+		gen.addPushConstantRange({ VkPushConstantRange{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float)} });
+		gen.addDescriptorSetLayout({ postDescSetLayout });
+		gen.setDepthStencilInfo(VK_FALSE, VK_FALSE);
+		gen.setColorBlendInfo(VK_FALSE);
+		gen.setRasterizerInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE);
+		gen.generate(renderPass, &postPipeline, &postPipelineLayout);
+		gen.resetAll();
 
 		/*
 		* compute pipeline
@@ -924,8 +1139,14 @@ private:
 		VkRenderPassBeginInfo lightingPassRenderPassInfo{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
 		lightingPassRenderPassInfo.clearValueCount = 1;
 		lightingPassRenderPassInfo.pClearValues = &clearColor[0];
-		lightingPassRenderPassInfo.renderPass = renderPass;
+		lightingPassRenderPassInfo.renderPass = hdrRenderPass;
 		lightingPassRenderPassInfo.renderArea = { {0, 0}, swapchain.extent };
+
+		VkRenderPassBeginInfo postRenderPassInfo{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+		postRenderPassInfo.clearValueCount = 1;
+		postRenderPassInfo.pClearValues = &clearColor[0];
+		postRenderPassInfo.renderPass = renderPass;
+		postRenderPassInfo.renderArea = { {0, 0}, swapchain.extent };
 
 		Imgui* imgui = static_cast<Imgui*>(imguiBase);
 
@@ -951,22 +1172,33 @@ private:
 			vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, 
 				geometryPassPipelineLayout, 0, 1, &descSets[currentFrame], 0, nullptr);
 			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &bunnyBuffer, &offsets);
-			vkCmdBindIndexBuffer(commandBuffers[i], bunnyBuffer, bunny.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
+			vkCmdBindIndexBuffer(commandBuffers[i], bunnyBuffer, sphere.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
 
 			//bunny
 			for (int instance = 0; instance < BUNNY_COUNT_SQRT* BUNNY_COUNT_SQRT; ++instance) {
 				vkCmdPushConstants(commandBuffers[i], geometryPassPipelineLayout,
 					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ObjPushConstant), &objPushConstants[instance]);
-				vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(bunny.indices.size()), 1, 0, 0, 0);
+				vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(sphere.indices.size()), 1, 0, 0, 0);
 			}
 
 			//floor
-			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &floorBuffer, &offsets);
+			/*vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &floorBuffer, &offsets);
 			vkCmdBindIndexBuffer(commandBuffers[i], floorBuffer, floor.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
 			vkCmdPushConstants(commandBuffers[i], geometryPassPipelineLayout,
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ObjPushConstant), &objPushConstants[BUNNY_COUNT_SQRT*BUNNY_COUNT_SQRT]);
-			vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(floor.indices.size()), 1, 0, 0, 0);
+			vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(floor.indices.size()), 1, 0, 0, 0);*/
+			vkdebug::marker::endLabel(commandBuffers[i]);
 
+			/*
+			* skydome geometry pass
+			*/
+			vkdebug::marker::beginLabel(commandBuffers[i], "Skydome geometry pass");
+			vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, skydomePipeline);
+			vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
+				skydomePipelineLayout, 0, 1, &descSets[currentFrame], 0, nullptr);
+			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &sphereBuffer, &offsets);
+			vkCmdBindIndexBuffer(commandBuffers[i], sphereBuffer, sphere.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
+			vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(sphere.indices.size()), 1, 0, 0, 0);
 			vkCmdEndRenderPass(commandBuffers[i]);
 			vkdebug::marker::endLabel(commandBuffers[i]);
 
@@ -979,21 +1211,21 @@ private:
 			vktools::setViewportScissorDynamicStates(commandBuffers[i], {SHADOW_MAP_DIM, SHADOW_MAP_DIM });
 			vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, shadowMapPipeline);
 			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &bunnyBuffer, &offsets);
-			vkCmdBindIndexBuffer(commandBuffers[i], bunnyBuffer, bunny.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
+			vkCmdBindIndexBuffer(commandBuffers[i], bunnyBuffer, sphere.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
 			//bunny
 			for (int instance = 0; instance < BUNNY_COUNT_SQRT * BUNNY_COUNT_SQRT; ++instance) {
 				shadowMapPushConstant.model = objPushConstants[instance].model;
 				vkCmdPushConstants(commandBuffers[i], shadowMapPipelineLayout,
 					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ShadowMapPushConstant), &shadowMapPushConstant);
-				vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(bunny.indices.size()), 1, 0, 0, 0);
+				vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(sphere.indices.size()), 1, 0, 0, 0);
 			}
 			//floor
-			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &floorBuffer, &offsets);
+			/*vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, &floorBuffer, &offsets);
 			vkCmdBindIndexBuffer(commandBuffers[i], floorBuffer, floor.vertices.bufferSize, VK_INDEX_TYPE_UINT32);
 			shadowMapPushConstant.model = objPushConstants[BUNNY_COUNT_SQRT * BUNNY_COUNT_SQRT].model;
 			vkCmdPushConstants(commandBuffers[i], shadowMapPipelineLayout,
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ShadowMapPushConstant), &shadowMapPushConstant);
-			vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(floor.indices.size()), 1, 0, 0, 0);
+			vkCmdDrawIndexed(commandBuffers[i], static_cast<uint32_t>(floor.indices.size()), 1, 0, 0, 0);*/
 			vkCmdEndRenderPass(commandBuffers[i]);
 			vkdebug::marker::endLabel(commandBuffers[i]);
 
@@ -1048,7 +1280,7 @@ private:
 			* lighting pass
 			*/
 			vkdebug::marker::beginLabel(commandBuffers[i], "Lighting Pass");
-			lightingPassRenderPassInfo.framebuffer = framebuffers[i];
+			lightingPassRenderPassInfo.framebuffer = hdrFramebuffers[currentFrame].framebuffer;
 			vkCmdBeginRenderPass(commandBuffers[i], &lightingPassRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 			vktools::setViewportScissorDynamicStates(commandBuffers[i], swapchain.extent);
 			vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, lightingPassPipeline);
@@ -1091,6 +1323,19 @@ private:
 				}
 				vkdebug::marker::endLabel(commandBuffers[i]);
 			}
+			vkCmdEndRenderPass(commandBuffers[i]);
+
+			/*
+			* post processing pass
+			*/
+			postRenderPassInfo.framebuffer = framebuffers[i];
+			vkCmdBeginRenderPass(commandBuffers[i], &postRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vktools::setViewportScissorDynamicStates(commandBuffers[i], swapchain.extent);
+			vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, postPipeline);
+			vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
+				postPipelineLayout, 0, 1, &postDescSets[currentFrame], 0, nullptr);
+			vkCmdPushConstants(commandBuffers[i], postPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &imgui->userInput.exposure);
+			vkCmdDraw(commandBuffers[i], 3, 1, 0, 0);
 
 			/*
 			* imgui
@@ -1116,6 +1361,9 @@ private:
 			devices.memoryAllocator.freeBufferMemory(blurKernelBuffers[i], bufferFlags);
 			vkDestroyBuffer(devices.device, blurKernelBuffers[i], nullptr);
 		}
+		devices.memoryAllocator.freeBufferMemory(hammersleyUniformBuffer, bufferFlags);
+		vkDestroyBuffer(devices.device, hammersleyUniformBuffer, nullptr);
+
 		uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
 		uniformBufferMemories.resize(MAX_FRAMES_IN_FLIGHT);
 		blurKernelBuffers.resize(MAX_FRAMES_IN_FLIGHT);
@@ -1137,6 +1385,11 @@ private:
 			blurKernelMemories[i] =
 				devices.memoryAllocator.allocateBufferMemory(blurKernelBuffers[i], bufferFlags);
 		}
+
+		VkBufferCreateInfo hammersleyUniformBufferInfo = vktools::initializers::bufferCreateInfo(sizeof(Hammersley),
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+		VK_CHECK_RESULT(vkCreateBuffer(devices.device, &hammersleyUniformBufferInfo, nullptr, &hammersleyUniformBuffer));
+		hammersleyUniformBufferMemory = devices.memoryAllocator.allocateBufferMemory(hammersleyUniformBuffer, bufferFlags);
 	}
 
 	/*
@@ -1168,9 +1421,17 @@ private:
 		gbufferDescBindings.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 		gbufferDescBindings.addBinding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 		gbufferDescBindings.addBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		gbufferDescBindings.addBinding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		gbufferDescBindings.addBinding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		gbufferDescBindings.addBinding(7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 		gbufferDescPool = gbufferDescBindings.createDescriptorPool(devices.device, MAX_FRAMES_IN_FLIGHT);
 		gbufferDescLayout = gbufferDescBindings.createDescriptorSetLayout(devices.device);
 		gbufferDescSets = vktools::allocateDescriptorSets(devices.device, gbufferDescLayout, gbufferDescPool, MAX_FRAMES_IN_FLIGHT);
+
+		postDescSetBindings.addBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		postDescPool = postDescSetBindings.createDescriptorPool(devices.device, MAX_FRAMES_IN_FLIGHT);
+		postDescSetLayout = postDescSetBindings.createDescriptorSetLayout(devices.device);
+		postDescSets = vktools::allocateDescriptorSets(devices.device, postDescSetLayout, postDescPool, MAX_FRAMES_IN_FLIGHT);
 
 		computeDescHorizontalBindings.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
 		computeDescHorizontalBindings.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
@@ -1224,13 +1485,24 @@ private:
 				shadowMaps[i].attachments[0].imageView,
 				VK_IMAGE_LAYOUT_GENERAL
 			};
+			VkDescriptorBufferInfo hammerselyInfo{ hammersleyUniformBuffer, 0, sizeof(Hammersley) };
 
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 0, &posAttachmentInfo));
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 1, &normalAttachmentInfo));
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 2, &diffuseAttachmentInfo));
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 3, &specularAttachmentInfo));
 			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 4, &shadowMapAttachmentInfo));
+			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 5, &irradianceMap.descriptor));
+			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 6, &skydomeTexture.descriptor));
+			writes.push_back(gbufferDescBindings.makeWrite(gbufferDescSets[i], 7, &hammerselyInfo));
 			
+			VkDescriptorImageInfo hdrFramebufferImageInfo{
+				sampler,
+				hdrFramebuffers[i].attachments[0].imageView,
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			};
+			writes.push_back(postDescSetBindings.makeWrite(postDescSets[i], 0, &hdrFramebufferImageInfo));
+
 			//compute desc sets
 			VkDescriptorImageInfo shadowMapBlurHorizontalAttachmentSrcInfo{
 				sampler,
